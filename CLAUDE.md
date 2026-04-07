@@ -1,160 +1,199 @@
 # FlightSearch
 
-用 Claude Code + agent-browser 搜尋 Google Flights，找最便宜的航班。
+搜尋 Google Flights 找最便宜航班。三層工具鏈：URL 生成 → 策略組合 → Playwright 自動搜尋。
+
+## 工具鏈
+
+```
+build_url.py  →  combo_search.py  →  search_flights.py
+（生成 URL）     （生成多策略 URL）    （Playwright 自動搜尋）
+```
+
+- **`tools/build_url.py`**：構造 Google Flights 搜尋 URL（protobuf 編碼）
+- **`tools/combo_search.py`**：生成組合票策略（baseline / open jaw / reverse / split）的搜尋 URL
+- **`tools/search_flights.py`**：Playwright 無頭瀏覽器自動搜尋，直接輸出結構化結果
 
 ## 模型分工
 
-- **Opus**（主對話）：策略規劃 — 選機場、排日期、生成 URL、比價決策、最終推薦
-- **Sonnet**（Agent tool, `model: "sonnet"`）：資訊判讀 — 開 URL、解析頁面快照、提取價格與航班資訊
+- **Opus**（主對話）：策略規劃 — 選機場、排日期、決定搜尋策略、比價決策、最終推薦
+- **Sonnet**（Agent tool）：僅用於需要 agent-browser 手動操作的場景（日曆探索）
 
-解析頁面時，一律 spawn Sonnet agent 處理，不要用 Opus 讀 snapshot 原文。
+一般搜尋不需要 LLM 介入 — `search_flights.py` 直接輸出結構化結果。
 
 ## 搜尋流程
 
-### 快速模式（推薦，~5 分鐘）
+### 快速模式（推薦，~2 分鐘）
 
 適用情境：使用者給了明確的月份和天數範圍。
 
 1. 使用者給需求（目的地、日期範圍、艙等、預算、轉機限制）
-2. 列出候選機場（目的地附近的主要機場）
-3. Opus 挑選 5-8 組代表性的 **機場 + 日期** 組合
-   - 涵蓋不同出發日（週間 vs 週末）
-   - 涵蓋不同天數（範圍內最短、中間、最長）
-4. 用 `tools/build_url.py --batch` 生成所有 Google Flights URL
-5. **平行查詢**：每組各啟一個背景 Agent（`run_in_background: true`），直接開 URL 抓結果
-6. 匯集、比較、推薦
+2. 挑選 5-8 組代表性的 **機場 + 日期** 組合
+3. 用 `build_url.py --batch` 生成 URL
+4. 用 `search_flights.py --parallel` 平行搜尋所有 URL
+5. 匯集、比較、推薦
 
-### 組合票模式（省錢進階，~10 分鐘）
+```bash
+# 步驟 3：生成 URL
+python3 tools/build_url.py TPE ATH --cabin business --batch \
+    2026-09-01,2026-09-11 \
+    2026-09-04,2026-09-14
 
-適用情境：使用者想找比直接來回票更便宜的組合，或願意接受 Open Jaw / 拆票。
+# 步驟 4：平行搜尋（直接輸出結果表格）
+python3 tools/search_flights.py --parallel --top 5 \
+    --labels "9/1-9/11,9/4-9/14" \
+    "<url1>" "<url2>"
+```
+
+### 組合票模式（~3 分鐘）
+
+適用情境：使用者想找比直接來回票更便宜的組合。
 
 **概念：**
-- **Open Jaw（長尾票）**：去程飛 A→B，回程從附近城市 C→A，中間 B→C 自補（廉航/火車）
-- **反向票**：買目的地出發的來回票（有時更便宜）+ 補一張單程去程
-- **拆票**：經中轉樞紐拆成多段單程，各段分別找最便宜的
+- **Baseline**：標準來回票
+- **Open Jaw**：去程飛 A→B，回程從附近城市 C→A，中間 B→C 自補（三段單程）
+- **反向票**：買目的地出發的來回票 + 補一張單程去程
+- **拆票**：經便宜樞紐拆成多段單程
 
 **流程：**
 1. 使用者給需求
-2. 用 `tools/combo_search.py` 生成所有策略的搜尋 URL
-   ```bash
-   python3 tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --cabin business
-   ```
-3. 從生成的策略中挑選有潛力的組合（通常 baseline + 2-3 個 open jaw + reverse）
-4. **平行查詢**：每個 segment URL 各啟一個背景 Agent
-5. 匯集結果，**加總各段票價**，跟 baseline 比較
-6. 推薦最便宜的組合
+2. 用 `combo_search.py` 生成所有策略的 URL
+3. 去重 URL，分批用 `search_flights.py --parallel` 搜尋
+4. 加總各策略的各段票價，跟 baseline 比較
+5. 推薦最便宜的組合
 
-**重要：** 組合票的每一段都要分別查價，最後加總比較。補票段（中段交通、單程廉航）的價格也要納入。
+```bash
+# 步驟 2：生成策略 URL
+python3 tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --cabin business --json
+
+# 步驟 3：去重後寫入檔案，平行搜尋
+python3 tools/search_flights.py --parallel --top 3 --format json \
+    --labels "Baseline RT,OW TPE→ATH,OW IST→TPE,..." \
+    --file urls.txt
+```
+
+**重要：** 組合票每段分別查價，加總比較。補票段價格也要納入。
 
 **策略篩選原則：**
 - Open Jaw：優先選目的地附近有便宜交通連接的城市
 - 反向票：適用於目的地所在國家的航空公司有促銷時
 - 拆票：適用於有已知便宜樞紐的長途航線（如亞洲→歐洲經 BKK/IST）
 
+**組合票適用情境（實測經驗）：**
+- 商務艙的單程票約為來回票的 60-70%，三段加總通常超過來回票
+- 經濟艙的單程/來回價差較小，組合票更可能划算
+- 當 baseline 來回票定價已經很有競爭力時（如阿提哈德中東航線），組合票很難贏
+- 組合票更適合：兩端都是主要樞紐、有大量廉航競爭、或來回票定價偏高的航線
+
 ### 完整模式（需要時才用，~15 分鐘）
 
 適用情境：使用者日期完全彈性（例如「下半年任何時間」），需要先掃日曆找最便宜月份。
 
-**第一階段：日曆探索**
-1. 手動操作 Google Flights 日曆視圖（此步無法用 URL 跳過）
-2. 每個候選機場各啟一個背景 Agent
+**第一階段：日曆探索（需 agent-browser）**
+1. 用 agent-browser 手動操作 Google Flights 日曆視圖
+2. 每個候選機場各啟一個背景 Sonnet Agent
 3. 匯集結果，找出最便宜的日期和機場
 
-**第二階段：用快速模式流程搜尋**
+**第二階段：用快速模式搜尋**
 1. 從日曆結果選最有潛力的組合
-2. 按快速模式步驟 4-6 執行
+2. 用 `search_flights.py` 平行搜尋
 
-## Google Flights 操作指南
+## 工具參考
 
-### URL 直接搜尋（優先使用）
-
-用 `tools/build_url.py` 構造搜尋 URL，跳過手動填表單：
+### build_url.py — URL 生成
 
 ```bash
-# 單一搜尋
+# 來回票
 python3 tools/build_url.py TPE ATH 2026-09-01 2026-09-11 --cabin business
 
-# 批次生成（推薦）
+# 單程（不給 return_date）
+python3 tools/build_url.py TPE ATH 2026-09-01 --cabin economy
+
+# 批次生成
 python3 tools/build_url.py TPE ATH --cabin business --batch \
     2026-09-01,2026-09-11 \
-    2026-09-02,2026-09-11 \
     2026-09-04,2026-09-14
 
-# 多段航程 / Multi-city（Open Jaw 等）
-python3 tools/build_url.py --multi --cabin business \
-    TPE,ATH,2026-09-01 \
-    ROM,TPE,2026-09-11
-
-# 組合票策略一鍵生成（baseline + open jaw + reverse + split）
-python3 tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --cabin business
-python3 tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --cabin business --json  # JSON 輸出
-python3 tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --types open_jaw reverse  # 只生成特定策略
-
-# 參數說明
+# 參數
 #   --cabin: economy | premium | business | first
 #   --stops: 0=不限(預設) | 1=直飛 | 2=最多1轉
 #   --passengers: 乘客數（預設 1）
 #   --curr: 幣別（預設 TWD）
 ```
 
-Agent 操作流程（只需 4 步）：
+> **注意：** `--multi`（multi-city URL）已不建議使用。Google Flights 的 `/search` endpoint 會靜默將 multi-city URL 改寫為來回票。Open Jaw 改用三段單程替代。
+
+### combo_search.py — 組合票策略生成
 
 ```bash
-# 1. 開啟預填好的搜尋頁面（URL 會自動填入所有搜尋條件）
-agent-browser --session <name> open "<generated-url>" && agent-browser --session <name> wait --load networkidle
+# 生成所有策略
+python3 tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --cabin business
 
-# 2. 點「搜尋航班」按鈕（URL 會預填表單但不會自動搜尋）
-agent-browser --session <name> snapshot -i
-agent-browser --session <name> click @<搜尋航班按鈕的ref>
-agent-browser --session <name> wait --load networkidle
+# JSON 輸出（方便程式解析）
+python3 tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --cabin business --json
 
-# 3. 取得搜尋結果
-agent-browser --session <name> snapshot -i
+# 只生成特定策略
+python3 tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --types baseline open_jaw
 
-# 4. 解析航班資訊（由 Sonnet agent 處理 snapshot 內容）
+# 可選策略類型：baseline, open_jaw, reverse, split
 ```
 
-> 注意：URL 預填表單但不會自動觸發搜尋。Agent 需要做一次 snapshot 找到「搜尋航班」按鈕，點擊後再 snapshot 取結果。
+輸出結構（JSON 模式）：每個策略包含 `type`、`name`、`desc`、`segments`（每段有 `label` 和 `url`）。
 
-### 手動表單操作（僅日曆探索時使用）
+### search_flights.py — Playwright 自動搜尋
 
-只有在需要操作日曆視圖時才需要手動填表單：
+無需 LLM 介入，直接用 Playwright 開啟 URL → 點搜尋 → 解析 aria-label → 輸出結果。
 
 ```bash
-# 開啟 Google Flights
+# 單一 URL
+python3 tools/search_flights.py "<google-flights-url>"
+
+# 多 URL 平行（推薦）
+python3 tools/search_flights.py --parallel --top 5 \
+    --labels "搜尋1,搜尋2,搜尋3" \
+    "<url1>" "<url2>" "<url3>"
+
+# 從檔案讀取 URL（一行一個）
+python3 tools/search_flights.py --parallel --top 3 --format json \
+    --labels "label1,label2" --file urls.txt
+
+# 參數
+#   --parallel: 平行執行（每 URL 一個子程序，各自獨立瀏覽器）
+#   --top N: 每個 URL 最多回傳 N 筆結果（預設 10）
+#   --format: table（人類可讀，預設）| json（程式解析）
+#   --labels: 逗號分隔的標籤，對應每個 URL
+#   --file: 從檔案讀取 URL
+```
+
+輸出欄位：航空公司、票價（TWD）、轉機次數、飛行時間、出發/抵達時間、轉機明細。
+
+**技術細節：**
+- 每個搜尋在獨立 incognito context 中執行（避免 session 互相干擾）
+- 自動偵測單程 URL 並切換表單為「單程」模式
+- 平行模式使用 subprocess（Playwright sync API 不支援 threading）
+- 解析 Google Flights DOM：`li.pIav2d` 結果卡片、`.JMc5Xc` 的 `aria-label` 屬性
+
+## agent-browser（僅日曆探索）
+
+agent-browser 僅在需要手動操作日曆視圖時使用：
+
+```bash
 agent-browser open "https://www.google.com/travel/flights?hl=zh-TW&curr=TWD"
 agent-browser wait --load networkidle
 agent-browser snapshot -i
-
-# 操作搜尋表單（用 snapshot 回傳的 @ref）
-# 每步操作後重新 snapshot 取得新 refs
+# 用 snapshot 回傳的 @ref 操作表單
 ```
 
-### 平行查詢
-
-使用 `--session` 隔離不同查詢：
-
+用 `--session` 隔離平行查詢：
 ```bash
 agent-browser --session s1 open "<url-1>"
 agent-browser --session s2 open "<url-2>"
-agent-browser --session s3 open "<url-3>"
 ```
 
-### Agent prompt 範本（快速模式）
+## 已知限制
 
-給 Sonnet agent 的 prompt 應包含：
-1. 預先生成好的 Google Flights URL
-2. 用 `--session <唯一名稱>` 避免衝突
-3. 明確要求提取的資訊格式（航空公司、票價、轉機、時間）
-4. 完成後 `agent-browser --session <name> close`
-
-### 重要提示
-
-- 操作前先讀 `sites/google-flights.md` 的已知問題和 URL 格式說明
-- URL 構造的技術細節記錄在 `sites/google-flights.md`
-- 每步操作後用 `agent-browser snapshot -i` 確認狀態
-- 頁面載入需要時間，用 `agent-browser wait --load networkidle`
-- 遇到新的失敗模式 → 立即更新 `sites/google-flights.md`
+- **Multi-city URL 不可用**：Google `/search` endpoint 會靜默改寫為來回票。Open Jaw 改用單程票替代。
+- **Reverse 策略在冷門航線可能失敗**：如 ATH→TPE 方向 Google 可能沒有索引。
+- **單程票定價不利**：商務艙單程約為來回 60-70%，組合策略需 3 段以上時很難贏過 baseline。
 
 ## 失敗記錄
 
