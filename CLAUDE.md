@@ -24,6 +24,33 @@
 5. **平行查詢**：每組各啟一個背景 Agent（`run_in_background: true`），直接開 URL 抓結果
 6. 匯集、比較、推薦
 
+### 組合票模式（省錢進階，~10 分鐘）
+
+適用情境：使用者想找比直接來回票更便宜的組合，或願意接受 Open Jaw / 拆票。
+
+**概念：**
+- **Open Jaw（長尾票）**：去程飛 A→B，回程從附近城市 C→A，中間 B→C 自補（廉航/火車）
+- **反向票**：買目的地出發的來回票（有時更便宜）+ 補一張單程去程
+- **拆票**：經中轉樞紐拆成多段單程，各段分別找最便宜的
+
+**流程：**
+1. 使用者給需求
+2. 用 `tools/combo_search.py` 生成所有策略的搜尋 URL
+   ```bash
+   python3 tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --cabin business
+   ```
+3. 從生成的策略中挑選有潛力的組合（通常 baseline + 2-3 個 open jaw + reverse）
+4. **平行查詢**：每個 segment URL 各啟一個背景 Agent
+5. 匯集結果，**加總各段票價**，跟 baseline 比較
+6. 推薦最便宜的組合
+
+**重要：** 組合票的每一段都要分別查價，最後加總比較。補票段（中段交通、單程廉航）的價格也要納入。
+
+**策略篩選原則：**
+- Open Jaw：優先選目的地附近有便宜交通連接的城市
+- 反向票：適用於目的地所在國家的航空公司有促銷時
+- 拆票：適用於有已知便宜樞紐的長途航線（如亞洲→歐洲經 BKK/IST）
+
 ### 完整模式（需要時才用，~15 分鐘）
 
 適用情境：使用者日期完全彈性（例如「下半年任何時間」），需要先掃日曆找最便宜月份。
@@ -52,6 +79,16 @@ python3 tools/build_url.py TPE ATH --cabin business --batch \
     2026-09-01,2026-09-11 \
     2026-09-02,2026-09-11 \
     2026-09-04,2026-09-14
+
+# 多段航程 / Multi-city（Open Jaw 等）
+python3 tools/build_url.py --multi --cabin business \
+    TPE,ATH,2026-09-01 \
+    ROM,TPE,2026-09-11
+
+# 組合票策略一鍵生成（baseline + open jaw + reverse + split）
+python3 tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --cabin business
+python3 tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --cabin business --json  # JSON 輸出
+python3 tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --types open_jaw reverse  # 只生成特定策略
 
 # 參數說明
 #   --cabin: economy | premium | business | first

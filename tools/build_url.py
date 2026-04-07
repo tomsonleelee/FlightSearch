@@ -11,6 +11,11 @@ Batch mode (multiple date combos):
         2026-09-01,2026-09-11 \\
         2026-09-02,2026-09-11 \\
         2026-09-04,2026-09-14
+
+Multi-city mode (arbitrary legs, for open-jaw / split tickets):
+    python3 tools/build_url.py --multi --cabin business \\
+        TPE,ATH,2026-09-01 \\
+        ROM,TPE,2026-09-11
 """
 
 import argparse
@@ -85,10 +90,37 @@ def build_url(
     return f"https://www.google.com/travel/flights/search?tfs={tfs}&tfu=KgIIAw&hl={hl}&curr={curr}"
 
 
+def build_url_multi(
+    legs: list[tuple[str, str, str]],
+    passengers: int = 1,
+    cabin: int = 1,
+    stops: int = 0,
+    hl: str = "zh-TW",
+    curr: str = "TWD",
+) -> str:
+    """Build a multi-city Google Flights URL.
+
+    Args:
+        legs: List of (origin, dest, date) tuples, e.g.
+              [("TPE", "ATH", "2026-09-01"), ("ROM", "TPE", "2026-09-11")]
+    """
+    proto = encode_field_varint(1, 28) + encode_field_varint(2, passengers)
+    for origin, dest, date in legs:
+        proto += encode_field_bytes(3, encode_leg(date, origin, dest))
+    proto += (
+        encode_field_varint(8, stops)
+        + encode_field_varint(9, cabin)
+        + encode_field_varint(14, 1)
+        + bytes.fromhex("82010b08ffffffffffffffffff01980101")
+    )
+    tfs = base64.urlsafe_b64encode(proto).decode().rstrip("=")
+    return f"https://www.google.com/travel/flights/search?tfs={tfs}&tfu=KgIIAw&hl={hl}&curr={curr}"
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate Google Flights search URLs")
-    parser.add_argument("origin", help="Origin IATA code (e.g. TPE)")
-    parser.add_argument("dest", help="Destination IATA code (e.g. ATH)")
+    parser.add_argument("origin", nargs="?", help="Origin IATA code (e.g. TPE)")
+    parser.add_argument("dest", nargs="?", help="Destination IATA code (e.g. ATH)")
     parser.add_argument("depart", nargs="?", help="Departure date YYYY-MM-DD")
     parser.add_argument("return_date", nargs="?", help="Return date YYYY-MM-DD")
     parser.add_argument(
@@ -111,11 +143,27 @@ def main():
         metavar="DEPART,RETURN",
         help="Batch mode: multiple date pairs",
     )
+    parser.add_argument(
+        "--multi",
+        nargs="+",
+        metavar="ORIGIN,DEST,DATE",
+        help="Multi-city mode: arbitrary legs (e.g. TPE,ATH,2026-09-01 ROM,TPE,2026-09-11)",
+    )
 
     args = parser.parse_args()
     cabin = CABIN_MAP[args.cabin]
 
-    if args.batch:
+    if args.multi:
+        legs = []
+        for leg_str in args.multi:
+            parts = leg_str.split(",")
+            if len(parts) != 3:
+                parser.error(f"Each --multi leg must be ORIGIN,DEST,DATE, got: {leg_str}")
+            legs.append((parts[0], parts[1], parts[2]))
+        label = " → ".join(f"{o}→{d} {dt}" for o, d, dt in legs)
+        url = build_url_multi(legs, args.passengers, cabin, args.stops, args.hl, args.curr)
+        print(f"{label}: {url}")
+    elif args.batch:
         for pair in args.batch:
             parts = pair.split(",")
             depart = parts[0]
@@ -133,7 +181,7 @@ def main():
         )
         print(url)
     else:
-        parser.error("Either provide depart date or use --batch")
+        parser.error("Either provide depart date, use --batch, or use --multi")
 
 
 if __name__ == "__main__":
