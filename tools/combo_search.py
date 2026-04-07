@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from build_url import CABIN_MAP, build_url, build_url_multi
+from build_url import CABIN_MAP, build_url
 
 
 # Nearby airports for open-jaw: destination -> list of alternative return cities
@@ -133,13 +133,15 @@ def generate_strategies(
     })
 
     # === 2. Open Jaw: fly in to dest, return from nearby city ===
+    # Google Flights does not support multi-city URLs via protobuf encoding
+    # (the /search endpoint silently rewrites them to round-trip).
+    # Instead, we split into separate one-way searches.
     for alt_iata, alt_name, transport in get_nearby(dest):
-        # Main ticket: multi-city (origin→dest, alt→origin)
-        multi_url = build_url_multi(
-            [(origin, dest, depart_date), (alt_iata, origin, return_date)],
-            **common,
-        )
-        # Supplement: dest → alt (one-way, use a date ~1 day before return)
+        # Leg 1: origin → dest (one-way outbound)
+        outbound_url = build_url(origin, dest, depart_date, **common)
+        # Leg 2: alt_city → origin (one-way return from nearby city)
+        return_url = build_url(alt_iata, origin, return_date, **common)
+        # Supplement: dest → alt (one-way transfer between cities)
         supplement_url = build_url(dest, alt_iata, return_date, **common)
 
         strategies.append({
@@ -147,7 +149,8 @@ def generate_strategies(
             "name": f"Open Jaw 經{alt_name}",
             "desc": f"{origin}→{dest} ... {alt_iata}→{origin}，中段 {dest}→{alt_iata}（{transport}）自補",
             "segments": [
-                {"label": f"主票 {origin}→{dest} + {alt_iata}→{origin}（多段）", "url": multi_url},
+                {"label": f"去程 {origin}→{dest}（單程）", "url": outbound_url},
+                {"label": f"回程 {alt_iata}→{origin}（單程）", "url": return_url},
                 {"label": f"補票 {dest}→{alt_iata}（單程，需另選日期）", "url": supplement_url},
             ],
         })
