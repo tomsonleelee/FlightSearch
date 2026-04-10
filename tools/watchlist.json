@@ -1,19 +1,17 @@
 {
   "routes": [
-    {
-      "origin": "TPE",
-      "dest": "ATH",
-      "depart_date": "2026-09-01",
-      "return_date": "2026-09-11",
-      "cabin": "business"
-    },
-    {
-      "origin": "TPE",
-      "dest": "ATH",
-      "depart_date": "2026-09-04",
-      "return_date": "2026-09-14",
-      "cabin": "business"
-    }
+    { "origin": "TPE", "dest": "BUD", "depart_date": "2026-10-01", "return_date": "2026-10-13", "cabin": "economy" },
+    { "origin": "TPE", "dest": "BUD", "depart_date": "2026-10-05", "return_date": "2026-10-17", "cabin": "economy" },
+    { "origin": "TPE", "dest": "BUD", "depart_date": "2026-10-10", "return_date": "2026-10-22", "cabin": "economy" },
+    { "origin": "TPE", "dest": "BUD", "depart_date": "2026-10-15", "return_date": "2026-10-27", "cabin": "economy" },
+    { "origin": "TPE", "dest": "BUD", "depart_date": "2026-10-20", "return_date": "2026-11-01", "cabin": "economy" },
+    { "origin": "TPE", "dest": "BUD", "depart_date": "2026-10-01", "return_date": "2026-10-13", "cabin": "business" },
+    { "origin": "TPE", "dest": "BUD", "depart_date": "2026-10-05", "return_date": "2026-10-17", "cabin": "business" },
+    { "origin": "TPE", "dest": "BUD", "depart_date": "2026-10-10", "return_date": "2026-10-22", "cabin": "business" },
+    { "origin": "TPE", "dest": "BUD", "depart_date": "2026-10-15", "return_date": "2026-10-27", "cabin": "business" },
+    { "origin": "TPE", "dest": "BUD", "depart_date": "2026-10-20", "return_date": "2026-11-01", "cabin": "business" },
+    { "origin": "TPE", "dest": "IST", "depart_date": "2026-10-05", "return_date": "2026-10-15", "cabin": "economy" },
+    { "origin": "TPE", "dest": "IST", "depart_date": "2026-10-20", "return_date": "2026-10-30", "cabin": "economy" }
   ],
   "settings": {
     "z_threshold": -2.0,
