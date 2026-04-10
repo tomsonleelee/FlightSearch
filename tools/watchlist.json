@@ -1,0 +1,31 @@
+{
+  "routes": [
+    {
+      "origin": "TPE",
+      "dest": "ATH",
+      "depart_date": "2026-09-01",
+      "return_date": "2026-09-11",
+      "cabin": "business"
+    },
+    {
+      "origin": "TPE",
+      "dest": "ATH",
+      "depart_date": "2026-09-04",
+      "return_date": "2026-09-14",
+      "cabin": "business"
+    }
+  ],
+  "settings": {
+    "z_threshold": -2.0,
+    "min_samples": 5,
+    "top_per_route": 5,
+    "currency": "TWD"
+  },
+  "notifications": {
+    "telegram": {
+      "enabled": true,
+      "bot_token_env": "TELEGRAM_BOT_TOKEN",
+      "chat_id_env": "TELEGRAM_CHAT_ID"
+    }
+  }
+}

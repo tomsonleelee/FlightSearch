@@ -7,11 +7,18 @@
 ```
 build_url.py  →  combo_search.py  →  search_flights.py
 （生成 URL）     （生成多策略 URL）    （Playwright 自動搜尋）
+                                           │
+                                    price_tracker.py  →  prices.db (SQLite)
+                                    （排程掃描 + 存儲）        │
+                                                        price_alert.py → Telegram
+                                                        （Z-score 偵測）
 ```
 
 - **`tools/build_url.py`**：構造 Google Flights 搜尋 URL（protobuf 編碼）
 - **`tools/combo_search.py`**：生成組合票策略（baseline / open jaw / reverse / split）的搜尋 URL
 - **`tools/search_flights.py`**：Playwright 無頭瀏覽器自動搜尋，直接輸出結構化結果
+- **`tools/price_tracker.py`**：排程掃描監控航線，存入 SQLite
+- **`tools/price_alert.py`**：Z-score 異常偵測 + Telegram 通知
 
 ## 模型分工
 
@@ -171,6 +178,52 @@ python3 tools/search_flights.py --parallel --top 3 --format json \
 - 自動偵測單程 URL 並切換表單為「單程」模式
 - 平行模式使用 subprocess（Playwright sync API 不支援 threading）
 - 解析 Google Flights DOM：`li.pIav2d` 結果卡片、`.JMc5Xc` 的 `aria-label` 屬性
+
+### price_tracker.py — 價格追蹤
+
+定期掃描 watchlist.json 中的監控航線，存入 SQLite。
+
+```bash
+# 掃描所有監控航線，存入 DB
+python3 tools/price_tracker.py
+
+# 掃描後自動跑異常偵測
+python3 tools/price_tracker.py --alert
+
+# 只看 URL（不實際搜尋）
+python3 tools/price_tracker.py --dry-run
+
+# 自訂 watchlist
+python3 tools/price_tracker.py --watchlist path/to/watchlist.json
+```
+
+**流程：** 讀 watchlist.json → `build_url` 生成 URL → `search_flights` 執行搜尋 → 寫入 `data/prices.db`
+
+**設定檔（tools/watchlist.json）：** 定義監控航線、Z-score 閾值、通知設定。
+
+### price_alert.py — 異常偵測
+
+讀取歷史價格，用 Z-score 偵測異常低價，支援 Telegram 通知。
+
+```bash
+# 檢查異常
+python3 tools/price_alert.py
+
+# 啟用 Telegram 通知
+python3 tools/price_alert.py --notify
+
+# 顯示歷史價格摘要
+python3 tools/price_alert.py --summary
+```
+
+**Z-score 邏輯：**
+1. 每次掃描取該航線最低價，形成時間序列
+2. 計算 mean 和 stdev（需至少 `min_samples` 筆）
+3. `z = (current_min - mean) / stdev`
+4. `z < z_threshold`（預設 -2.0）時觸發警報
+5. 同航線同天只警報一次（alerts 表去重）
+
+**Telegram 設定：** watchlist.json 啟用 + `.env` 設定 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_CHAT_ID`
 
 ## agent-browser（僅日曆探索）
 
