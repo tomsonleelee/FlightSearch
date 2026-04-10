@@ -5,8 +5,11 @@ Reads routes from watchlist.json, generates Google Flights URLs via build_url,
 runs Playwright searches via search_flights, and persists every result to a
 local SQLite database for historical analysis.
 
+Supports multi-POS scanning: each route is searched from multiple country
+points of sale (gl= parameter) to find cross-market price differences.
+
 Usage:
-    python3 tools/price_tracker.py                  # scan all routes
+    python3 tools/price_tracker.py                  # scan all routes x all POS
     python3 tools/price_tracker.py --dry-run        # show URLs without searching
     python3 tools/price_tracker.py --alert          # run alert check after scan
     python3 tools/price_tracker.py --watchlist path  # custom watchlist file
@@ -17,6 +20,7 @@ import hashlib
 import json
 import sqlite3
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -49,11 +53,14 @@ CREATE TABLE IF NOT EXISTS prices (
     stops INTEGER NOT NULL,
     duration TEXT,
     departure_time TEXT,
-    arrival_time TEXT
+    arrival_time TEXT,
+    pos TEXT NOT NULL DEFAULT 'tw'
 );
 
 CREATE INDEX IF NOT EXISTS idx_route
     ON prices(origin, dest, depart_date, return_date, cabin);
+CREATE INDEX IF NOT EXISTS idx_route_pos
+    ON prices(origin, dest, depart_date, return_date, cabin, pos);
 CREATE INDEX IF NOT EXISTS idx_scanned
     ON prices(scanned_at);
 
@@ -73,12 +80,23 @@ CREATE TABLE IF NOT EXISTS alerts (
 );
 """
 
+MIGRATE_POS = """
+-- Add pos column if missing (idempotent via pragma check)
+ALTER TABLE prices ADD COLUMN pos TEXT NOT NULL DEFAULT 'tw';
+"""
+
 
 def init_db(db_path: Path) -> sqlite3.Connection:
     """Initialize the database and ensure schema exists."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     conn.executescript(SCHEMA)
+    # Migrate: add pos column to existing databases
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(prices)").fetchall()]
+    if "pos" not in cols:
+        conn.execute("ALTER TABLE prices ADD COLUMN pos TEXT NOT NULL DEFAULT 'tw'")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_route_pos ON prices(origin, dest, depart_date, return_date, cabin, pos)")
+        conn.commit()
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
@@ -99,52 +117,77 @@ def watchlist_hash(data: dict) -> str:
 
 
 def run_scan(watchlist: dict, dry_run: bool = False) -> list[dict]:
-    """Generate URLs from watchlist and run searches.
+    """Generate URLs from watchlist and run searches for all POS countries.
 
-    Returns a list of dicts, each with route info and search results.
+    Returns a list of dicts, each with route info, pos, and search results.
     """
     settings = watchlist.get("settings", {})
     top = settings.get("top_per_route", 5)
     currency = settings.get("currency", "TWD")
+    pos_countries = settings.get("pos_countries", ["tw"])
+    batch_size = settings.get("batch_size", 6)
+    batch_delay = settings.get("batch_delay_sec", 5)
 
-    urls = []
-    labels = []
-    route_meta = []
+    # Build all (route, pos) combinations
+    all_urls = []
+    all_labels = []
+    all_meta = []  # (route_dict, pos_code)
 
     for route in watchlist["routes"]:
         cabin_name = route.get("cabin", "economy")
         cabin_code = CABIN_MAP.get(cabin_name, 1)
-        url = build_url(
-            origin=route["origin"],
-            dest=route["dest"],
-            depart_date=route["depart_date"],
-            return_date=route.get("return_date"),
-            cabin=cabin_code,
-            curr=currency,
-        )
         rt = route.get("return_date", "OW")
-        label = f"{route['origin']}→{route['dest']} {route['depart_date']}~{rt} {cabin_name}"
-        urls.append(url)
-        labels.append(label)
-        route_meta.append(route)
+
+        for pos in pos_countries:
+            url = build_url(
+                origin=route["origin"],
+                dest=route["dest"],
+                depart_date=route["depart_date"],
+                return_date=route.get("return_date"),
+                cabin=cabin_code,
+                curr=currency,
+                gl=pos,
+            )
+            label = f"{route['origin']}→{route['dest']} {route['depart_date']}~{rt} {cabin_name} [{pos}]"
+            all_urls.append(url)
+            all_labels.append(label)
+            all_meta.append((route, pos))
 
     if dry_run:
-        for label, url in zip(labels, urls):
+        for label, url in zip(all_labels, all_urls):
             print(f"  {label}")
             print(f"    {url}")
+        print(f"\nTotal: {len(all_urls)} queries ({len(watchlist['routes'])} routes x {len(pos_countries)} POS)")
         return []
 
-    print(f"Scanning {len(urls)} route(s)...")
-    results = search_urls(urls, labels, top=top, parallel=len(urls) > 1)
+    # Execute in batches to avoid Google throttling
+    total_queries = len(all_urls)
+    num_batches = (total_queries + batch_size - 1) // batch_size
+    print(f"Scanning {total_queries} queries ({len(watchlist['routes'])} routes x {len(pos_countries)} POS) in {num_batches} batch(es)...")
 
     scan_data = []
-    for route, result in zip(route_meta, results):
-        scan_data.append({"route": route, "result": result})
+    for batch_idx in range(num_batches):
+        start = batch_idx * batch_size
+        end = min(start + batch_size, total_queries)
+        batch_urls = all_urls[start:end]
+        batch_labels = all_labels[start:end]
+        batch_meta = all_meta[start:end]
+
+        if batch_idx > 0:
+            print(f"  Waiting {batch_delay}s before batch {batch_idx + 1}/{num_batches}...")
+            time.sleep(batch_delay)
+
+        print(f"  Batch {batch_idx + 1}/{num_batches}: {len(batch_urls)} queries...")
+        results = search_urls(batch_urls, batch_labels, top=top, parallel=len(batch_urls) > 1)
+
+        for (route, pos), result in zip(batch_meta, results):
+            scan_data.append({"route": route, "pos": pos, "result": result})
+
     return scan_data
 
 
 def store_results(conn: sqlite3.Connection, scan_data: list[dict], wl_hash: str) -> int:
-    """Store scan results in the database. Returns the scan_id."""
+    """Store scan results in the database. Returns total records stored."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
     cursor = conn.execute(
@@ -156,17 +199,18 @@ def store_results(conn: sqlite3.Connection, scan_data: list[dict], wl_hash: str)
     total = 0
     for item in scan_data:
         route = item["route"]
+        pos = item["pos"]
         result = item["result"]
         if result.error:
-            print(f"  Error for {route['origin']}→{route['dest']}: {result.error}")
+            print(f"  Error for {route['origin']}→{route['dest']} [{pos}]: {result.error}")
             continue
         for flight in result.flights:
             conn.execute(
                 """INSERT INTO prices
                    (scan_id, scanned_at, origin, dest, depart_date, return_date,
                     cabin, airline, price, currency, stops, duration,
-                    departure_time, arrival_time)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    departure_time, arrival_time, pos)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     scan_id, now,
                     route["origin"], route["dest"],
@@ -175,6 +219,7 @@ def store_results(conn: sqlite3.Connection, scan_data: list[dict], wl_hash: str)
                     flight.airline, flight.price, flight.currency,
                     flight.stops, flight.duration,
                     flight.departure, flight.arrival,
+                    pos,
                 ),
             )
             total += 1

@@ -17,7 +17,11 @@
     "z_threshold": -2.0,
     "min_samples": 5,
     "top_per_route": 5,
-    "currency": "TWD"
+    "currency": "TWD",
+    "pos_countries": ["tw", "th", "tr", "in", "mx", "id"],
+    "pos_savings_threshold": 0.15,
+    "batch_size": 6,
+    "batch_delay_sec": 5
   },
   "notifications": {
     "telegram": {

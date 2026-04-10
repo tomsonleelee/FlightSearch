@@ -72,6 +72,7 @@ def build_url(
     stops: int = 0,
     hl: str = "zh-TW",
     curr: str = "TWD",
+    gl: str | None = None,
 ) -> str:
     proto = (
         encode_field_varint(1, 28)
@@ -87,7 +88,10 @@ def build_url(
         + bytes.fromhex("82010b08ffffffffffffffffff01980101")
     )
     tfs = base64.urlsafe_b64encode(proto).decode().rstrip("=")
-    return f"https://www.google.com/travel/flights/search?tfs={tfs}&tfu=KgIIAw&hl={hl}&curr={curr}"
+    url = f"https://www.google.com/travel/flights/search?tfs={tfs}&tfu=KgIIAw&hl={hl}&curr={curr}"
+    if gl:
+        url += f"&gl={gl}"
+    return url
 
 
 def build_url_multi(
@@ -137,6 +141,7 @@ def main():
     parser.add_argument("--passengers", type=int, default=1)
     parser.add_argument("--hl", default="zh-TW")
     parser.add_argument("--curr", default="TWD")
+    parser.add_argument("--gl", default=None, help="Country code for POS (e.g. tw, th, tr)")
     parser.add_argument(
         "--batch",
         nargs="+",
@@ -162,6 +167,8 @@ def main():
             legs.append((parts[0], parts[1], parts[2]))
         label = " → ".join(f"{o}→{d} {dt}" for o, d, dt in legs)
         url = build_url_multi(legs, args.passengers, cabin, args.stops, args.hl, args.curr)
+        if args.gl:
+            url += f"&gl={args.gl}"
         print(f"{label}: {url}")
     elif args.batch:
         for pair in args.batch:
@@ -170,14 +177,14 @@ def main():
             ret = parts[1] if len(parts) > 1 else None
             url = build_url(
                 args.origin, args.dest, depart, ret,
-                args.passengers, cabin, args.stops, args.hl, args.curr,
+                args.passengers, cabin, args.stops, args.hl, args.curr, args.gl,
             )
             label = f"{depart} → {ret}" if ret else depart
             print(f"{label}: {url}")
     elif args.depart:
         url = build_url(
             args.origin, args.dest, args.depart, args.return_date,
-            args.passengers, cabin, args.stops, args.hl, args.curr,
+            args.passengers, cabin, args.stops, args.hl, args.curr, args.gl,
         )
         print(url)
     else:
