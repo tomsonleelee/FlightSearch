@@ -189,6 +189,8 @@ def main():
     parser.add_argument("--db", type=Path, default=DB_PATH, help="Path to SQLite database")
     parser.add_argument("--dry-run", action="store_true", help="Show URLs without searching")
     parser.add_argument("--alert", action="store_true", help="Run alert check after scan")
+    parser.add_argument("--notify", action="store_true", help="Send Telegram on anomaly (passed to price_alert)")
+    parser.add_argument("--daily-summary", action="store_true", help="Send daily summary via Telegram (passed to price_alert)")
     args = parser.parse_args()
 
     watchlist = load_watchlist(args.watchlist)
@@ -212,10 +214,16 @@ def main():
         if args.alert:
             import subprocess
             alert_script = Path(__file__).resolve().parent / "price_alert.py"
-            subprocess.run(
-                [sys.executable, str(alert_script), "--db", str(args.db),
-                 "--watchlist", str(args.watchlist)],
-            )
+            cmd = [
+                sys.executable, str(alert_script),
+                "--db", str(args.db),
+                "--watchlist", str(args.watchlist),
+            ]
+            if args.notify:
+                cmd.append("--notify")
+            if args.daily_summary:
+                cmd.append("--daily-summary")
+            subprocess.run(cmd)
     finally:
         conn.close()
 

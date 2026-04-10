@@ -251,6 +251,84 @@ def run_alerts(
     return triggered
 
 
+def compute_trend(prices: list[int]) -> str:
+    """Compute price trend from recent history.
+
+    Compares the average of the last 3 prices to the overall mean.
+    Returns a trend indicator string.
+    """
+    if len(prices) < 3:
+        return "—"
+    overall_mean = statistics.mean(prices)
+    recent_mean = statistics.mean(prices[-3:])
+    pct = (recent_mean - overall_mean) / overall_mean * 100
+    if pct < -5:
+        return "↓↓ dropping"
+    elif pct < -2:
+        return "↓ declining"
+    elif pct > 5:
+        return "↑↑ rising"
+    elif pct > 2:
+        return "↑ rising"
+    return "— stable"
+
+
+def build_daily_summary(conn: sqlite3.Connection, watchlist: dict) -> str:
+    """Build a daily price summary message for Telegram."""
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+    lines = [f"<b>Daily Price Summary</b> ({now} UTC)\n"]
+
+    for route in watchlist["routes"]:
+        cabin = route.get("cabin", "economy")
+        rt = route.get("return_date", "OW")
+
+        latest = get_latest_flights(conn, route)
+        history = get_route_history(conn, route)
+
+        if not latest:
+            lines.append(
+                f"{route['origin']} → {route['dest']} {cabin} "
+                f"{route['depart_date']}~{rt}\n"
+                f"  No data\n"
+            )
+            continue
+
+        cheapest_airline = latest[0][0]
+        cheapest_price = latest[0][1]
+
+        historical_mins = [row[1] for row in history]
+        mean_price = statistics.mean(historical_mins) if historical_mins else cheapest_price
+        trend = compute_trend(historical_mins)
+
+        lines.append(
+            f"{route['origin']} → {route['dest']} {cabin} "
+            f"{route['depart_date']}~{rt}\n"
+            f"  NT${cheapest_price:,} ({cheapest_airline})\n"
+            f"  mean NT${mean_price:,.0f} | trend: {trend}\n"
+        )
+
+    return "\n".join(lines)
+
+
+def send_daily_summary(conn: sqlite3.Connection, watchlist: dict) -> None:
+    """Build and send the daily price summary via Telegram."""
+    tg_config = watchlist.get("notifications", {}).get("telegram", {})
+    bot_token = os.environ.get(tg_config.get("bot_token_env", ""), "")
+    chat_id = os.environ.get(tg_config.get("chat_id_env", ""), "")
+
+    msg = build_daily_summary(conn, watchlist)
+    print(msg)
+
+    if tg_config.get("enabled", False) and bot_token and chat_id:
+        ok = send_telegram(bot_token, chat_id, msg)
+        if ok:
+            print("  Daily summary sent to Telegram.")
+        else:
+            print("  Failed to send daily summary to Telegram.")
+    else:
+        print("  Telegram not enabled — summary printed to terminal only.")
+
+
 def print_summary(conn: sqlite3.Connection, watchlist: dict) -> None:
     """Print a summary of historical prices for all routes."""
     print("\n=== Price History Summary ===\n")
@@ -279,6 +357,7 @@ def main():
     parser.add_argument("--watchlist", type=Path, default=DEFAULT_WATCHLIST, help="Path to watchlist.json")
     parser.add_argument("--notify", action="store_true", help="Send Telegram notifications")
     parser.add_argument("--summary", action="store_true", help="Show price history summary")
+    parser.add_argument("--daily-summary", action="store_true", help="Send daily price summary via Telegram")
     args = parser.parse_args()
 
     load_dotenv(ENV_FILE)
@@ -294,6 +373,9 @@ def main():
     try:
         if args.summary:
             print_summary(conn, watchlist)
+
+        if args.daily_summary:
+            send_daily_summary(conn, watchlist)
 
         print("Checking for price anomalies...")
         triggered = run_alerts(conn, watchlist, notify=args.notify)
