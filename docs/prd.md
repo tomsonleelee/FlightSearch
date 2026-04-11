@@ -83,10 +83,27 @@ Manual browser automation for exploring Google Flights date grid view.
 - Leverages `agent-browser` CLI for DOM interaction.
 - Results feed into the fast search mode for detailed queries.
 
+### F7: Alaska Airlines Award Search (`award_search.py`)
+
+Search Alaska Airlines for award (mileage) ticket availability.
+
+- **Inputs**: origin, destination, departure date, optional return date.
+- **Browser**: Patchright (undetected Playwright fork) to bypass Akamai anti-bot.
+- **Search strategy**: direct URL construction (`/search/results?...&ShoppingMethod=onlineaward`);
+  falls back to form-based search if direct URL is redirected.
+- **Extraction**: flight cards parsed via `[data-testid="flight-card-{n}"]` selectors;
+  fare regex extracts cabin class, mileage points, and cash co-pay per card.
+- **Date range**: `--start`/`--end` iterates over consecutive dates with individual searches.
+- **Calendar view**: `--calendar` flag reads `<shoulder-dates>` web component's `dates` JSON
+  attribute (±15 days around search date) to show a monthly grid of lowest award prices.
+  Single request covers a full month by searching the 15th.
+- **Output formats**: human-readable table or JSON.
+- **Limitation**: headed mode required (Akamai blocks headless); `--headless` opt-in available.
+
 ## Non-Functional Requirements
 
 - **Zero external API dependencies** — no paid APIs, no LLM tokens for search.
-- **Zero new Python dependencies** — uses only stdlib + Playwright.
+- **Minimal Python dependencies** — stdlib + Playwright + Patchright (award search only).
 - **Privacy** — all data stored locally in SQLite; credentials in `.env` only.
 - **Robustness** — isolated browser contexts prevent session interference;
   parallel searches use subprocess isolation.

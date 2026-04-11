@@ -27,6 +27,7 @@
 | `search_flights.py` | Headless browser search + DOM parsing | Playwright |
 | `price_tracker.py` | Scan orchestration + SQLite persistence | `build_url`, `search_flights` |
 | `price_alert.py` | Statistical anomaly detection + notifications | None (stdlib) |
+| `award_search.py` | Alaska Airlines award search + calendar | Patchright |
 
 All inter-module communication is via direct Python imports. No RPC, no
 message queues, no external services (except Telegram for optional alerts).
@@ -164,6 +165,34 @@ Optional, enabled via `watchlist.json` and `.env` credentials.
 - Bot token and chat ID are read from environment variables (loaded from
   `.env` via built-in `load_dotenv` helper).
 
+### Award DOM Parsing (award_search.py)
+
+Alaska Airlines uses the Auro Design System with Shadow DOM web components.
+Flight results are rendered as `[data-testid="flight-card-{n}"]` elements.
+
+**Anti-bot strategy:**
+- Patchright (undetected Playwright fork) handles browser fingerprinting.
+- Headed mode is required — Akamai still detects headless browsers.
+
+**Search flow (dual-path):**
+1. **Primary**: construct direct URL with query params
+   (`/search/results?O={origin}&D={dest}&OD={date}&ShoppingMethod=onlineaward`).
+2. **Fallback**: if redirected away from `/results`, fill the search form via
+   Patchright locators. Airport dropdowns use `[data-testid="airport-option-{CODE}"]`
+   with `force=True` click to bypass Shadow DOM pointer interception.
+
+**Fare extraction:**
+- JavaScript `page.evaluate()` with raw strings (`r"""..."""`) to prevent Python
+  from double-escaping regex backslashes.
+- Fare regex: `/(Main|First|Saver|Premium)\s*([\d,.]+k?)\s*points\s*pts\s*\+\s*\$(\d+)/gi`
+- Each flight card yields multiple fares (one per cabin class).
+
+**Calendar view:**
+- The `<shoulder-dates>` web component embeds a JSON `dates` attribute with ~31
+  days of lowest award prices (±15 days centered on search date).
+- Searching for the 15th of the target month covers the full month in one request.
+- JSON entries contain `awardPoints`, `price` (taxes), and `isDiscounted` fields.
+
 ## Concurrency Model
 
 - **Sequential search**: single Playwright browser, multiple incognito
@@ -197,5 +226,6 @@ FlightSearch/
     ├── search_flights.py   # Playwright search
     ├── price_tracker.py    # Scan orchestrator
     ├── price_alert.py      # Anomaly detection
+    ├── award_search.py     # Alaska Airlines award search
     └── watchlist.json      # Route monitoring config
 ```

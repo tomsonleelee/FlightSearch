@@ -10,13 +10,15 @@ flights using headless browser automation — zero API keys, zero LLM tokens.
 - **Automated Search** — Playwright headless Chromium, parallel execution, structured output
 - **Price Tracking** — scheduled scans with SQLite persistence
 - **Anomaly Detection** — Z-score based low-price alerts with Telegram notifications
+- **Award Search** — Alaska Airlines mileage ticket search with anti-bot bypass (Patchright)
 
 ## Requirements
 
 - Python 3.11+
 - Playwright (`pip install playwright && playwright install chromium`)
+- Patchright (`pip install patchright && patchright install chromium`) — for award search only
 
-No other dependencies. All tools use Python standard library only.
+No other dependencies. All tools use Python standard library + browser automation.
 
 ## Quick Start
 
@@ -114,6 +116,37 @@ python3 tools/price_alert.py --notify
 python3 tools/price_alert.py --summary
 ```
 
+### award_search.py — Alaska Airlines Award Search
+
+Search Alaska Airlines for award (mileage) tickets using Patchright, an undetected
+Playwright fork that bypasses Akamai anti-bot protection.
+
+```bash
+# Install Patchright
+pip install patchright
+patchright install chromium
+
+# One-way award search
+python3 tools/award_search.py SEA LAX 2026-10-01
+
+# Round-trip
+python3 tools/award_search.py SEA LAX 2026-10-01 --return-date 2026-10-08
+
+# Date range (search multiple days)
+python3 tools/award_search.py SEA LAX --start 2026-10-01 --end 2026-10-03
+
+# Monthly calendar view (lowest miles per day)
+python3 tools/award_search.py SEA NRT 2026-10-01 --calendar
+
+# JSON output
+python3 tools/award_search.py SEA LAX 2026-10-01 --format json
+
+# Options: --top N, --headless, --return-date, --calendar, --format {table,json}
+```
+
+**Note:** Headed mode (default) is required — Akamai blocks headless browsers.
+The `--headless` flag is available but results may be empty.
+
 ## Configuration
 
 ### watchlist.json
@@ -188,6 +221,7 @@ FlightSearch/
 │   ├── search_flights.py   # Playwright automated search
 │   ├── price_tracker.py    # Scan orchestrator + SQLite storage
 │   ├── price_alert.py      # Z-score anomaly detection + alerts
+│   ├── award_search.py     # Alaska Airlines award search (Patchright)
 │   └── watchlist.json      # Route monitoring configuration
 ├── data/                   # SQLite database (gitignored)
 ├── docs/                   # PRD, SDD, research notes

@@ -12,6 +12,8 @@ build_url.py  →  combo_search.py  →  search_flights.py
                                     （排程掃描 + 存儲）        │
                                                         price_alert.py → Telegram
                                                         （Z-score 偵測）
+
+award_search.py（獨立工具 — Patchright 搜 Alaska Airlines 里程票）
 ```
 
 - **`tools/build_url.py`**：構造 Google Flights 搜尋 URL（protobuf 編碼）
@@ -19,6 +21,7 @@ build_url.py  →  combo_search.py  →  search_flights.py
 - **`tools/search_flights.py`**：Playwright 無頭瀏覽器自動搜尋，直接輸出結構化結果
 - **`tools/price_tracker.py`**：排程掃描監控航線，存入 SQLite
 - **`tools/price_alert.py`**：Z-score 異常偵測 + Telegram 通知
+- **`tools/award_search.py`**：Alaska Airlines 里程票搜尋（Patchright 反偵測瀏覽器）+ 月曆視圖
 
 ## 模型分工
 
@@ -224,6 +227,36 @@ python3 tools/price_alert.py --summary
 5. 同航線同天只警報一次（alerts 表去重）
 
 **Telegram 設定：** watchlist.json 啟用 + `.env` 設定 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_CHAT_ID`
+
+### award_search.py — Alaska Airlines 里程票搜尋
+
+用 Patchright（反偵測 Playwright）搜尋 Alaska Airlines 里程票。獨立工具，不依賴其他 tools。
+
+```bash
+# 安裝 Patchright
+pip install patchright && patchright install chromium
+
+# 單程搜尋
+python3 tools/award_search.py SEA LAX 2026-10-01
+
+# 來回搜尋
+python3 tools/award_search.py SEA LAX 2026-10-01 --return-date 2026-10-08
+
+# 日期區間（逐日搜尋）
+python3 tools/award_search.py SEA LAX --start 2026-10-01 --end 2026-10-03
+
+# 月曆視圖（整月最低里程數）
+python3 tools/award_search.py SEA NRT 2026-10-01 --calendar
+
+# JSON 輸出
+python3 tools/award_search.py SEA LAX 2026-10-01 --format json
+```
+
+**技術細節：**
+- 預設 headed 模式（Akamai 會擋 headless）
+- 雙路搜尋：直接 URL → 表單 fallback
+- 月曆視圖讀取 `<shoulder-dates>` 元件的 JSON，單次請求涵蓋整月
+- `--headless` 可選但可能無結果
 
 ## agent-browser（僅日曆探索）
 
