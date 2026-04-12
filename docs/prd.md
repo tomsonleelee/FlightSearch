@@ -100,6 +100,27 @@ Search Alaska Airlines for award (mileage) ticket availability.
 - **Output formats**: human-readable table or JSON.
 - **Limitation**: headed mode required (Akamai blocks headless); `--headless` opt-in available.
 
+### F8: ANA Mileage Club Award Search (`ana_award_search.py` + `ana_setup.py`)
+
+Search ANA's international award booking system for mileage ticket availability.
+
+- **Setup**: `ana_setup.py` opens a headed browser for manual login; saves session
+  cookies (`auth/ana_state.json`) and browser metadata (`auth/ana_meta.json`).
+  Supports `--prefill` to pre-fill member number from `.env`.
+- **Authentication**: cookie injection via Playwright `storage_state` — no
+  automated login (Akamai Bot Manager blocks programmatic login attempts).
+- **Inputs**: origin, destination, departure date, optional return date, cabin class.
+- **Browser**: Patchright (undetected Playwright fork) with saved cookies.
+- **Search flow**: navigate to ANA award search form, fill origin/dest/date/cabin,
+  submit, parse result table rows (`tr.oneWayDisplayPlan`).
+- **Calendar view**: `--calendar` queries ANA's availability calendar
+  (`cam.ana.co.jp`) to show per-cabin availability (O/X) for each day across
+  up to 6 months.
+- **Session management**: detects expired sessions (redirected to login page or
+  "heavy traffic" block) and prompts user to re-run setup.
+- **Date range**: `--start`/`--end` iterates over consecutive dates.
+- **Output formats**: human-readable table or JSON.
+
 ## Non-Functional Requirements
 
 - **Zero external API dependencies** — no paid APIs, no LLM tokens for search.
@@ -138,6 +159,8 @@ Stores sensitive credentials (excluded from version control):
 ```
 TELEGRAM_BOT_TOKEN=<bot-token>
 TELEGRAM_CHAT_ID=<chat-id>
+ANA_MEMBER_NUMBER=<member-number>   # optional, for ana_setup.py --prefill
+ANA_PASSWORD=<password>             # reserved for future use
 ```
 
 ## Known Limitations

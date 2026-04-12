@@ -14,6 +14,9 @@ build_url.py  →  combo_search.py  →  search_flights.py
                                                         （Z-score 偵測）
 
 award_search.py（獨立工具 — Patchright 搜 Alaska Airlines 里程票）
+
+ana_setup.py → ana_award_search.py
+（手動登入存 cookie）  （Patchright 搜 ANA 里程票，用 cookie injection）
 ```
 
 - **`tools/build_url.py`**：構造 Google Flights 搜尋 URL（protobuf 編碼）
@@ -22,6 +25,8 @@ award_search.py（獨立工具 — Patchright 搜 Alaska Airlines 里程票）
 - **`tools/price_tracker.py`**：排程掃描監控航線，存入 SQLite
 - **`tools/price_alert.py`**：Z-score 異常偵測 + Telegram 通知
 - **`tools/award_search.py`**：Alaska Airlines 里程票搜尋（Patchright 反偵測瀏覽器）+ 月曆視圖
+- **`tools/ana_setup.py`**：ANA 手動登入設定 — 開瀏覽器讓人類登入，存 cookie 到 `auth/`
+- **`tools/ana_award_search.py`**：ANA 里程票搜尋（Patchright + cookie injection）+ 月曆視圖
 
 ## 模型分工
 
@@ -257,6 +262,45 @@ python3 tools/award_search.py SEA LAX 2026-10-01 --format json
 - 雙路搜尋：直接 URL → 表單 fallback
 - 月曆視圖讀取 `<shoulder-dates>` 元件的 JSON，單次請求涵蓋整月
 - `--headless` 可選但可能無結果
+
+### ana_setup.py — ANA 手動登入設定
+
+```bash
+# 開啟瀏覽器讓人類登入（cookie 存到 auth/）
+python3 tools/ana_setup.py
+
+# 預填會員號碼（從 .env 讀取 ANA_MEMBER_NUMBER）
+python3 tools/ana_setup.py --prefill
+```
+
+**流程：** 開 headed 瀏覽器 → 導到 ANA 登入頁 → 人類手動登入 → 偵測登入成功 → 存 `auth/ana_state.json`（cookies）+ `auth/ana_meta.json`（userAgent）
+
+### ana_award_search.py — ANA 里程票搜尋
+
+前提：先跑過 `ana_setup.py` 存好 cookie。
+
+```bash
+# 單程搜尋
+python3 tools/ana_award_search.py TPE NRT 2026-10-01
+
+# 來回搜尋
+python3 tools/ana_award_search.py TPE NRT 2026-10-01 --return-date 2026-10-08
+
+# 日期區間（逐日搜尋）
+python3 tools/ana_award_search.py TPE NRT --start 2026-10-01 --end 2026-10-03
+
+# 月曆視圖（各艙等每日可用性）
+python3 tools/ana_award_search.py TPE NRT 2026-10-01 --calendar
+
+# JSON 輸出
+python3 tools/ana_award_search.py TPE NRT 2026-10-01 --format json --top 5
+```
+
+**技術細節：**
+- Cookie injection：`browser.new_context(storage_state=auth/ana_state.json, user_agent=...)`
+- Akamai Bot Manager 會擋自動登入 → 只能人類登入 + cookie 重用
+- Session 過期偵測：URL 含 `login` 或頁面出現 `heavy traffic` → 提示重跑 `ana_setup.py`
+- 月曆視圖查 `cam.ana.co.jp` 獨立端點，涵蓋最多 6 個月
 
 ## agent-browser（僅日曆探索）
 

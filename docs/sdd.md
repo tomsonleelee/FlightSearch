@@ -28,6 +28,8 @@
 | `price_tracker.py` | Scan orchestration + SQLite persistence | `build_url`, `search_flights` |
 | `price_alert.py` | Statistical anomaly detection + notifications | None (stdlib) |
 | `award_search.py` | Alaska Airlines award search + calendar | Patchright |
+| `ana_setup.py` | ANA manual login + cookie save | Patchright |
+| `ana_award_search.py` | ANA Mileage Club award search + calendar | Patchright |
 
 All inter-module communication is via direct Python imports. No RPC, no
 message queues, no external services (except Telegram for optional alerts).
@@ -193,6 +195,50 @@ Flight results are rendered as `[data-testid="flight-card-{n}"]` elements.
 - Searching for the 15th of the target month covers the full month in one request.
 - JSON entries contain `awardPoints`, `price` (taxes), and `isDiscounted` fields.
 
+### ANA Award Search (`ana_award_search.py` + `ana_setup.py`)
+
+ANA Mileage Club uses Akamai Bot Manager which blocks automated login at the
+server level (returns "heavy traffic" page regardless of browser fingerprint).
+The solution uses a two-phase approach inspired by GrokAPI:
+
+**Phase 1 — Manual Login (`ana_setup.py`):**
+1. Launch headed Patchright browser and navigate to ANA award search URL.
+2. ANA redirects to login page; user manually enters credentials.
+3. Poll every 2s for login success (URL change to `award_search*`, logout button
+   visible, or redirect to `mypage`).
+4. Save session via `context.storage_state()` → `auth/ana_state.json`.
+5. Save browser metadata (userAgent) → `auth/ana_meta.json`.
+6. Optional `--prefill` reads `ANA_MEMBER_NUMBER` from `.env` to pre-fill the
+   member number field.
+
+**Phase 2 — Automated Search (`ana_award_search.py`):**
+1. Load saved state from `auth/ana_state.json` and userAgent from `auth/ana_meta.json`.
+2. Create Patchright context with `storage_state=` and `user_agent=` to inject
+   the authenticated session.
+3. Navigate to ANA award search form; fill origin, destination, date, cabin.
+4. Submit and wait for results table.
+5. Parse `tr.oneWayDisplayPlan` rows for flight details (number, airline, times,
+   duration, stops, miles, availability status).
+6. If redirected to login page or "heavy traffic" page, report session expired.
+
+**Anti-bot strategy summary:**
+- Human login bypasses Akamai challenge entirely.
+- Cookie injection reuses the authenticated session without re-triggering detection.
+- Browser metadata (userAgent) is preserved to maintain fingerprint consistency.
+- `auth/` directory is gitignored to prevent credential leakage.
+
+**Calendar view:**
+- Queries `cam.ana.co.jp/psz/tokutencal/form_e.jsp` (separate from main search).
+- Returns per-day, per-cabin availability markers (O = available, X = unavailable).
+- Covers up to 6 months in a single request.
+
+**Data structures:**
+- `AwardFlight`: flight_number, airline, duration, times, origin, dest, stops,
+  cabin, miles, miles_str, status, aircraft.
+- `AwardSearchResult`: route info, cabin, total_results, flights list, error.
+- `CalendarDay`: date, economy/premium/business/first availability markers.
+- `CalendarResult`: route info, year, month, months_data (list of CalendarDay lists).
+
 ## Concurrency Model
 
 - **Sequential search**: single Playwright browser, multiple incognito
@@ -227,5 +273,7 @@ FlightSearch/
     ├── price_tracker.py    # Scan orchestrator
     ├── price_alert.py      # Anomaly detection
     ├── award_search.py     # Alaska Airlines award search
+    ├── ana_setup.py        # ANA manual login setup
+    ├── ana_award_search.py # ANA Mileage Club award search
     └── watchlist.json      # Route monitoring config
 ```

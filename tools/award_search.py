@@ -512,7 +512,9 @@ def search_calendar(
             days = []
             for entry in dates_json:
                 if entry["date"].startswith(month_prefix):
-                    pts = entry.get("awardPoints", 0)
+                    pts = entry.get("awardPoints") or 0
+                    if not pts:
+                        continue
                     pts_k = pts / 1000
                     if pts_k == int(pts_k):
                         miles_str = f"{int(pts_k)}k"

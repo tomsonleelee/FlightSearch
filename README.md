@@ -11,6 +11,7 @@ flights using headless browser automation — zero API keys, zero LLM tokens.
 - **Price Tracking** — scheduled scans with SQLite persistence
 - **Anomaly Detection** — Z-score based low-price alerts with Telegram notifications
 - **Award Search** — Alaska Airlines mileage ticket search with anti-bot bypass (Patchright)
+- **ANA Award Search** — ANA Mileage Club international award search with manual login + cookie reuse
 
 ## Requirements
 
@@ -147,6 +148,49 @@ python3 tools/award_search.py SEA LAX 2026-10-01 --format json
 **Note:** Headed mode (default) is required — Akamai blocks headless browsers.
 The `--headless` flag is available but results may be empty.
 
+### ana_award_search.py — ANA Mileage Club Award Search
+
+Search ANA for international award (mileage) ticket availability. Uses Patchright
+with saved session cookies to bypass Akamai Bot Manager.
+
+**First-time setup** — manual login to save session cookies:
+
+```bash
+# Install Patchright
+pip install patchright
+patchright install chromium
+
+# Interactive login (opens browser — log in manually)
+python3 tools/ana_setup.py
+
+# With member number pre-filled from .env
+python3 tools/ana_setup.py --prefill
+```
+
+**Search usage:**
+
+```bash
+# One-way award search
+python3 tools/ana_award_search.py TPE NRT 2026-10-01
+
+# Round-trip
+python3 tools/ana_award_search.py TPE NRT 2026-10-01 --return-date 2026-10-08
+
+# Date range (search multiple days)
+python3 tools/ana_award_search.py TPE NRT --start 2026-10-01 --end 2026-10-03
+
+# Monthly calendar view (availability per cabin per day)
+python3 tools/ana_award_search.py TPE NRT 2026-10-01 --calendar
+
+# JSON output, top 5 results
+python3 tools/ana_award_search.py TPE NRT 2026-10-01 --format json --top 5
+
+# Options: --top N, --headless, --return-date, --cabin, --calendar, --format {table,json}
+```
+
+**Note:** Requires `auth/ana_state.json` from `ana_setup.py`. If cookies expire,
+re-run `ana_setup.py` to log in again.
+
 ## Configuration
 
 ### watchlist.json
@@ -222,7 +266,10 @@ FlightSearch/
 │   ├── price_tracker.py    # Scan orchestrator + SQLite storage
 │   ├── price_alert.py      # Z-score anomaly detection + alerts
 │   ├── award_search.py     # Alaska Airlines award search (Patchright)
+│   ├── ana_setup.py        # ANA manual login setup (saves cookies)
+│   ├── ana_award_search.py # ANA Mileage Club award search (Patchright)
 │   └── watchlist.json      # Route monitoring configuration
+├── auth/                   # Saved session cookies (gitignored)
 ├── data/                   # SQLite database (gitignored)
 ├── docs/                   # PRD, SDD, research notes
 ├── results/                # Search result files
