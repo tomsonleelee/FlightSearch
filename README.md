@@ -11,15 +11,17 @@ flights using headless browser automation — zero API keys, zero LLM tokens.
 - **Price Tracking** — scheduled scans with SQLite persistence
 - **Anomaly Detection** — Z-score based low-price alerts with Telegram notifications
 - **Award Search** — Alaska Airlines mileage ticket search with anti-bot bypass (Patchright)
-- **ANA Award Search** — ANA Mileage Club international award search with manual login + cookie reuse
+- **ANA Award Search** — ANA Mileage Club international award search via CDP Chrome + auto-login
 
 ## Requirements
 
 - Python 3.11+
 - Playwright (`pip install playwright && playwright install chromium`)
 - Patchright (`pip install patchright && patchright install chromium`) — for award search only
+- Google Chrome — required for ANA award search (CDP mode uses system Chrome)
 
 No other dependencies. All tools use Python standard library + browser automation.
+A virtual environment (`.venv/`) is recommended for dependency isolation.
 
 ## Quick Start
 
@@ -150,46 +152,43 @@ The `--headless` flag is available but results may be empty.
 
 ### ana_award_search.py — ANA Mileage Club Award Search
 
-Search ANA for international award (mileage) ticket availability. Uses Patchright
-with saved session cookies to bypass Akamai Bot Manager.
+Search ANA for international award (mileage) ticket availability. Uses CDP
+(Chrome DevTools Protocol) to launch system Chrome — zero automation fingerprint,
+fully bypasses Akamai Bot Manager.
 
-**First-time setup** — manual login to save session cookies:
+**First-time setup:**
 
 ```bash
-# Install Patchright
-pip install patchright
-patchright install chromium
+# Install Patchright (used for CDP connection only)
+pip install patchright && patchright install chromium
 
-# Interactive login (opens browser — log in manually)
-python3 tools/ana_setup.py
+# Add credentials to .env
+echo "ANA_MEMBER_NUMBER=your-member-number" >> .env
+echo "ANA_PASSWORD=your-password" >> .env
 
-# With member number pre-filled from .env
+# First login (opens Chrome, you log in manually, cookies saved to profile)
 python3 tools/ana_setup.py --prefill
 ```
 
 **Search usage:**
 
 ```bash
-# One-way award search
-python3 tools/ana_award_search.py TPE NRT 2026-10-01
+# Award search (auto-login + JS form submission + calendar results)
+python3 tools/ana_award_search.py TPE NRT 2026-10-01 --top 5
 
 # Round-trip
 python3 tools/ana_award_search.py TPE NRT 2026-10-01 --return-date 2026-10-08
 
-# Date range (search multiple days)
-python3 tools/ana_award_search.py TPE NRT --start 2026-10-01 --end 2026-10-03
-
 # Monthly calendar view (availability per cabin per day)
 python3 tools/ana_award_search.py TPE NRT 2026-10-01 --calendar
 
-# JSON output, top 5 results
+# JSON output
 python3 tools/ana_award_search.py TPE NRT 2026-10-01 --format json --top 5
-
-# Options: --top N, --headless, --return-date, --cabin, --calendar, --format {table,json}
 ```
 
-**Note:** Requires `auth/ana_state.json` from `ana_setup.py`. If cookies expire,
-re-run `ana_setup.py` to log in again.
+**How it works:** Launches system Chrome via CDP (no automation hooks) → auto-fills
+password from `.env` → submits search form via JavaScript → parses miles costs from
+calendar page. Session expired? Auto-login handles it transparently.
 
 ## Configuration
 
@@ -269,7 +268,7 @@ FlightSearch/
 │   ├── ana_setup.py        # ANA manual login setup (saves cookies)
 │   ├── ana_award_search.py # ANA Mileage Club award search (Patchright)
 │   └── watchlist.json      # Route monitoring configuration
-├── auth/                   # Saved session cookies (gitignored)
+├── auth/                   # Chrome profile + saved cookies (gitignored)
 ├── data/                   # SQLite database (gitignored)
 ├── docs/                   # PRD, SDD, research notes
 ├── results/                # Search result files

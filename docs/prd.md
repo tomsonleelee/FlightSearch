@@ -104,20 +104,28 @@ Search Alaska Airlines for award (mileage) ticket availability.
 
 Search ANA's international award booking system for mileage ticket availability.
 
-- **Setup**: `ana_setup.py` opens a headed browser for manual login; saves session
-  cookies (`auth/ana_state.json`) and browser metadata (`auth/ana_meta.json`).
-  Supports `--prefill` to pre-fill member number from `.env`.
-- **Authentication**: cookie injection via Playwright `storage_state` — no
-  automated login (Akamai Bot Manager blocks programmatic login attempts).
+- **Setup**: `ana_setup.py` launches system Chrome via CDP (`--remote-debugging-port`)
+  with a persistent profile (`auth/ana_chrome_profile/`). User logs in manually in
+  a normal Chrome window (zero automation fingerprint). Cookies are extracted via
+  CDP connection and saved to `auth/ana_state.json` + `auth/ana_meta.json`.
+- **Authentication**: CDP Chrome with persistent profile retains cookies. On session
+  expiry, auto-login reads `ANA_PASSWORD` from `.env`, fills the password field,
+  and clicks Login — all within a real Chrome window (bypasses Akamai).
 - **Inputs**: origin, destination, departure date, optional return date, cabin class.
-- **Browser**: Patchright (undetected Playwright fork) with saved cookies.
-- **Search flow**: navigate to ANA award search form, fill origin/dest/date/cabin,
-  submit, parse result table rows (`tr.oneWayDisplayPlan`).
+- **Browser**: system Chrome launched via `subprocess` + Patchright CDP connection.
+- **Search flow**: navigate to search form → set hidden field values via
+  `page.evaluate()` JavaScript → `form.submit()` on existing JSF form → parse
+  calendar comparison page. Bypasses all UI automation (no typing, no clicking,
+  no autocomplete interaction).
+- **Result extraction**: ANA returns a calendar page with embedded JavaScript
+  `CalendarSearchResult` entries containing miles costs per departure/return date
+  combination. Parser extracts these via regex on `page.content()`.
 - **Calendar view**: `--calendar` queries ANA's availability calendar
   (`cam.ana.co.jp`) to show per-cabin availability (O/X) for each day across
   up to 6 months.
-- **Session management**: detects expired sessions (redirected to login page or
-  "heavy traffic" block) and prompts user to re-run setup.
+- **Session management**: detects expired sessions via page title (not URL, since
+  ANA URLs can contain "login" even after successful login). Auto-login handles
+  re-authentication transparently.
 - **Date range**: `--start`/`--end` iterates over consecutive dates.
 - **Output formats**: human-readable table or JSON.
 
@@ -159,8 +167,8 @@ Stores sensitive credentials (excluded from version control):
 ```
 TELEGRAM_BOT_TOKEN=<bot-token>
 TELEGRAM_CHAT_ID=<chat-id>
-ANA_MEMBER_NUMBER=<member-number>   # optional, for ana_setup.py --prefill
-ANA_PASSWORD=<password>             # reserved for future use
+ANA_MEMBER_NUMBER=<member-number>   # for ana_setup.py --prefill
+ANA_PASSWORD=<password>             # for auto-login during award search
 ```
 
 ## Known Limitations

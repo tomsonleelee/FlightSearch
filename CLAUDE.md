@@ -16,7 +16,7 @@ build_url.py  →  combo_search.py  →  search_flights.py
 award_search.py（獨立工具 — Patchright 搜 Alaska Airlines 里程票）
 
 ana_setup.py → ana_award_search.py
-（手動登入存 cookie）  （Patchright 搜 ANA 里程票，用 cookie injection）
+（CDP Chrome 登入存 cookie）  （CDP Chrome 搜 ANA 里程票，JS 表單提交）
 ```
 
 - **`tools/build_url.py`**：構造 Google Flights 搜尋 URL（protobuf 編碼）
@@ -25,8 +25,8 @@ ana_setup.py → ana_award_search.py
 - **`tools/price_tracker.py`**：排程掃描監控航線，存入 SQLite
 - **`tools/price_alert.py`**：Z-score 異常偵測 + Telegram 通知
 - **`tools/award_search.py`**：Alaska Airlines 里程票搜尋（Patchright 反偵測瀏覽器）+ 月曆視圖
-- **`tools/ana_setup.py`**：ANA 手動登入設定 — 開瀏覽器讓人類登入，存 cookie 到 `auth/`
-- **`tools/ana_award_search.py`**：ANA 里程票搜尋（Patchright + cookie injection）+ 月曆視圖
+- **`tools/ana_setup.py`**：ANA 登入設定 — CDP 開正常 Chrome 讓人類登入，存 cookie 到 `auth/`
+- **`tools/ana_award_search.py`**：ANA 里程票搜尋（CDP Chrome + JS 表單提交 + 自動登入）+ 月曆視圖
 
 ## 模型分工
 
@@ -263,31 +263,29 @@ python3 tools/award_search.py SEA LAX 2026-10-01 --format json
 - 月曆視圖讀取 `<shoulder-dates>` 元件的 JSON，單次請求涵蓋整月
 - `--headless` 可選但可能無結果
 
-### ana_setup.py — ANA 手動登入設定
+### ana_setup.py — ANA 登入設定（CDP 模式）
 
 ```bash
-# 開啟瀏覽器讓人類登入（cookie 存到 auth/）
-python3 tools/ana_setup.py
+# 首次設定：加密碼到 .env
+echo "ANA_MEMBER_NUMBER=your-number" >> .env
+echo "ANA_PASSWORD=your-password" >> .env
 
-# 預填會員號碼（從 .env 讀取 ANA_MEMBER_NUMBER）
+# 開正常 Chrome 讓人類登入（cookie 存到 auth/）
 python3 tools/ana_setup.py --prefill
 ```
 
-**流程：** 開 headed 瀏覽器 → 導到 ANA 登入頁 → 人類手動登入 → 偵測登入成功 → 存 `auth/ana_state.json`（cookies）+ `auth/ana_meta.json`（userAgent）
+**流程：** `subprocess` 開正常 Chrome（`--remote-debugging-port`）→ 導到 ANA 登入頁 → 人類手動登入 → CDP 偵測登入成功 → Patchright `connect_over_cdp()` 抓 cookie → 存 `auth/ana_state.json` + `auth/ana_meta.json`
 
 ### ana_award_search.py — ANA 里程票搜尋
 
-前提：先跑過 `ana_setup.py` 存好 cookie。
+首次需跑 `ana_setup.py`，之後自動登入。
 
 ```bash
-# 單程搜尋
-python3 tools/ana_award_search.py TPE NRT 2026-10-01
+# 搜尋（自動登入 + JS 表單提交 + 日曆結果）
+python3 tools/ana_award_search.py TPE NRT 2026-10-01 --top 5
 
 # 來回搜尋
 python3 tools/ana_award_search.py TPE NRT 2026-10-01 --return-date 2026-10-08
-
-# 日期區間（逐日搜尋）
-python3 tools/ana_award_search.py TPE NRT --start 2026-10-01 --end 2026-10-03
 
 # 月曆視圖（各艙等每日可用性）
 python3 tools/ana_award_search.py TPE NRT 2026-10-01 --calendar
@@ -297,9 +295,11 @@ python3 tools/ana_award_search.py TPE NRT 2026-10-01 --format json --top 5
 ```
 
 **技術細節：**
-- Cookie injection：`browser.new_context(storage_state=auth/ana_state.json, user_agent=...)`
-- Akamai Bot Manager 會擋自動登入 → 只能人類登入 + cookie 重用
-- Session 過期偵測：URL 含 `login` 或頁面出現 `heavy traffic` → 提示重跑 `ana_setup.py`
+- CDP Chrome：`subprocess` 開正常 Chrome + Patchright `connect_over_cdp()`（零自動化痕跡）
+- 自動登入：session 過期時從 `.env` 讀密碼，填入 `#password` 欄位 + 點 Login
+- JS 表單提交：`page.evaluate()` 設 hidden fields + `form.submit()`（跳過所有 UI 自動化）
+- 結果解析：從 HTML 內嵌 JavaScript 的 `CalendarSearchResult` 提取里程價格
+- Session 偵測：用 page title（不是 URL）判斷是否在登入頁
 - 月曆視圖查 `cam.ana.co.jp` 獨立端點，涵蓋最多 6 個月
 
 ## agent-browser（僅日曆探索）

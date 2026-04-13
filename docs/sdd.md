@@ -28,8 +28,8 @@
 | `price_tracker.py` | Scan orchestration + SQLite persistence | `build_url`, `search_flights` |
 | `price_alert.py` | Statistical anomaly detection + notifications | None (stdlib) |
 | `award_search.py` | Alaska Airlines award search + calendar | Patchright |
-| `ana_setup.py` | ANA manual login + cookie save | Patchright |
-| `ana_award_search.py` | ANA Mileage Club award search + calendar | Patchright |
+| `ana_setup.py` | ANA login via CDP Chrome + cookie save | Chrome + Patchright (CDP) |
+| `ana_award_search.py` | ANA Mileage Club award search + calendar | Chrome + Patchright (CDP) |
 
 All inter-module communication is via direct Python imports. No RPC, no
 message queues, no external services (except Telegram for optional alerts).
@@ -197,44 +197,87 @@ Flight results are rendered as `[data-testid="flight-card-{n}"]` elements.
 
 ### ANA Award Search (`ana_award_search.py` + `ana_setup.py`)
 
-ANA Mileage Club uses Akamai Bot Manager which blocks automated login at the
-server level (returns "heavy traffic" page regardless of browser fingerprint).
-The solution uses a two-phase approach inspired by GrokAPI:
+ANA Mileage Club uses Akamai Bot Manager which blocks all automated browsers —
+including Patchright (undetected Playwright fork) and system Chrome launched via
+Playwright's `channel="chrome"`. Even `launch_persistent_context` with a real
+Chrome profile is detected. The solution uses CDP (Chrome DevTools Protocol) to
+launch a completely normal Chrome process and connect to it externally.
 
-**Phase 1 — Manual Login (`ana_setup.py`):**
-1. Launch headed Patchright browser and navigate to ANA award search URL.
-2. ANA redirects to login page; user manually enters credentials.
-3. Poll every 2s for login success (URL change to `award_search*`, logout button
-   visible, or redirect to `mypage`).
-4. Save session via `context.storage_state()` → `auth/ana_state.json`.
-5. Save browser metadata (userAgent) → `auth/ana_meta.json`.
-6. Optional `--prefill` reads `ANA_MEMBER_NUMBER` from `.env` to pre-fill the
-   member number field.
+**Phase 1 — Setup (`ana_setup.py`):**
+1. Launch system Chrome via `subprocess.Popen()` with
+   `--remote-debugging-port=9333` and `--user-data-dir=auth/ana_chrome_profile/`.
+   Chrome runs as a normal browser — zero Playwright/automation hooks injected.
+2. Navigate to ANA award search URL (redirects to login page).
+3. Poll CDP endpoint (`/json/list`) every 10s to detect when the user logs in
+   (URL no longer contains `login` and contains `award_search`).
+4. Connect via Patchright `connect_over_cdp()` to extract cookies.
+5. Save `context.storage_state()` → `auth/ana_state.json`.
+6. Save browser metadata (userAgent) → `auth/ana_meta.json`.
+7. Terminate Chrome process.
 
-**Phase 2 — Automated Search (`ana_award_search.py`):**
-1. Load saved state from `auth/ana_state.json` and userAgent from `auth/ana_meta.json`.
-2. Create Patchright context with `storage_state=` and `user_agent=` to inject
-   the authenticated session.
-3. Navigate to ANA award search form; fill origin, destination, date, cabin.
-4. Submit and wait for results table.
-5. Parse `tr.oneWayDisplayPlan` rows for flight details (number, airline, times,
-   duration, stops, miles, availability status).
-6. If redirected to login page or "heavy traffic" page, report session expired.
+**Phase 2 — Search (`ana_award_search.py`):**
+1. Launch system Chrome via `subprocess.Popen()` with CDP port 9334 and
+   the same persistent profile directory (`auth/ana_chrome_profile/`).
+2. Connect via Patchright `connect_over_cdp()`.
+3. Navigate to ANA award search form. If redirected to login page (detected
+   by page title containing "login"), auto-login:
+   - Read `ANA_PASSWORD` from `.env`
+   - Fill `#password` field via Playwright locator
+   - Click Login button with `force=True`
+   - Poll until page title no longer contains "login"
+4. Set form field values via `page.evaluate()` JavaScript:
+   - Hidden fields: `departureAirportCode:field`, `arrivalAirportCode:field`,
+     `awardDepartureDate:field`, `awardReturnDate:field`, `hiddenSearchMode`,
+     `boardingClass`, etc.
+   - Add a hidden input with the submit button's `name` attribute (JSF requires
+     the button name in POST data to identify the action).
+   - Call `form.submit()` on the existing JSF form (NOT a dynamically created
+     form — JSF rejects requests from forms not matching its ViewState).
+5. Wait for `networkidle` + poll for `CalendarSearchResult` in page content.
+6. Parse results from embedded JavaScript (see below).
+7. Terminate Chrome process.
+
+**Why CDP instead of Patchright launch:**
+Akamai's Sensor JS (`asw-fingerprints.js`, 64KB) detects Playwright-launched
+browsers via multiple signals (WebDriver flag, plugin enumeration, canvas
+fingerprint, etc.). CDP connection to a normally-launched Chrome has zero
+detectable automation markers — Patchright is only used as a CDP client to
+read DOM and extract cookies, not to control browser launch.
+
+**Why JS form submission instead of UI automation:**
+ANA's JSF form has multiple validation layers: autocomplete dropdowns that set
+internal JS state, readonly calendar pickers, overlay elements (`maskForClose`)
+that intercept clicks, and onclick handlers that check form state. Setting hidden
+field values via JS + `form.submit()` bypasses all of these while preserving
+the JSF ViewState and conversation context.
+
+**Result extraction:**
+ANA's search returns a calendar comparison page (`award_search_roundtrip_calendar.xhtml`)
+with embedded JavaScript containing `CalendarSearchResult` entries:
+```javascript
+var returnDate = "20261005"; var milesCost = '20,000';
+tempArray.push(new CalendarList.CalendarSearchResult("20260929", returnDate, milesCost));
+```
+Parser extracts all `(departureDate, returnDate, milesCost)` tuples via regex,
+filters out `'-'` (unavailable), and sorts by miles ascending.
 
 **Anti-bot strategy summary:**
-- Human login bypasses Akamai challenge entirely.
-- Cookie injection reuses the authenticated session without re-triggering detection.
-- Browser metadata (userAgent) is preserved to maintain fingerprint consistency.
+- Chrome launched via `subprocess` (not Playwright) = zero automation fingerprint.
+- CDP connection is external/passive — does not modify browser behavior.
+- Persistent Chrome profile retains cookies across sessions.
+- Auto-login fills password in a real Chrome window (Akamai sees normal user).
 - `auth/` directory is gitignored to prevent credential leakage.
 
 **Calendar view:**
 - Queries `cam.ana.co.jp/psz/tokutencal/form_e.jsp` (separate from main search).
 - Returns per-day, per-cabin availability markers (O = available, X = unavailable).
 - Covers up to 6 months in a single request.
+- Also uses CDP Chrome launch pattern.
 
 **Data structures:**
-- `AwardFlight`: flight_number, airline, duration, times, origin, dest, stops,
-  cabin, miles, miles_str, status, aircraft.
+- `AwardFlight`: flight_number, airline, duration, departure_time (date for
+  calendar mode), arrival_time (return date for calendar mode), origin, dest,
+  stops, cabin, miles, miles_str, status, aircraft.
 - `AwardSearchResult`: route info, cabin, total_results, flights list, error.
 - `CalendarDay`: date, economy/premium/business/first availability markers.
 - `CalendarResult`: route info, year, month, months_data (list of CalendarDay lists).

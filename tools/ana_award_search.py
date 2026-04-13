@@ -124,6 +124,14 @@ CABIN_NAMES = {
 AUTH_DIR = Path(__file__).resolve().parent.parent / "auth"
 STATE_PATH = AUTH_DIR / "ana_state.json"
 META_PATH = AUTH_DIR / "ana_meta.json"
+PROFILE_DIR = AUTH_DIR / "ana_chrome_profile"
+
+CDP_PORT = 9334  # different port from ana_setup.py
+
+CHROME_PATHS = [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+]
 
 NO_AUTH_MSG = (
     "ANA session not found. Run setup first:\n"
@@ -133,6 +141,110 @@ EXPIRED_MSG = (
     "ANA session expired (redirected to login). Re-run setup:\n"
     "  python3 tools/ana_setup.py\n"
 )
+
+
+# ---------------------------------------------------------------------------
+# Persistent Chrome manager — launch once, reuse across searches
+# ---------------------------------------------------------------------------
+
+class _ChromeManager:
+    """Manages a persistent Chrome instance with CDP connection."""
+
+    def __init__(self):
+        self._proc = None
+        self._pw = None
+        self._browser = None
+        self._page = None
+
+    def _find_chrome(self) -> str | None:
+        import os
+        for p in CHROME_PATHS:
+            if os.path.exists(p):
+                return p
+        return None
+
+    def _is_alive(self) -> bool:
+        """Check if Chrome + CDP connection is still usable."""
+        if not self._proc or self._proc.poll() is not None:
+            return False
+        if not self._page:
+            return False
+        try:
+            self._page.evaluate("() => true")
+            return True
+        except Exception:
+            return False
+
+    def _kill(self):
+        """Tear down everything."""
+        try:
+            if self._browser:
+                self._browser.close()
+        except Exception:
+            pass
+        try:
+            if self._pw:
+                self._pw.stop()
+        except Exception:
+            pass
+        try:
+            if self._proc:
+                self._proc.terminate()
+                self._proc.wait(timeout=5)
+        except Exception:
+            pass
+        self._proc = self._browser = self._pw = self._page = None
+
+    def get_page(self):
+        """Return a usable page, launching Chrome if needed."""
+        import subprocess
+        import time as time_mod
+        from patchright.sync_api import sync_playwright
+
+        if self._is_alive():
+            return self._page
+
+        # Not alive — clean up and restart
+        self._kill()
+
+        chrome_path = self._find_chrome()
+        if not chrome_path:
+            raise RuntimeError("Chrome not found. Install Google Chrome.")
+
+        PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+        self._proc = subprocess.Popen(
+            [
+                chrome_path,
+                f"--remote-debugging-port={CDP_PORT}",
+                f"--user-data-dir={PROFILE_DIR}",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "about:blank",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time_mod.sleep(3)
+
+        self._pw = sync_playwright().start()
+        self._browser = self._pw.chromium.connect_over_cdp(
+            f"http://127.0.0.1:{CDP_PORT}"
+        )
+        context = (
+            self._browser.contexts[0]
+            if self._browser.contexts
+            else self._browser.new_context()
+        )
+        self._page = context.pages[0] if context.pages else context.new_page()
+        return self._page
+
+    def close(self):
+        """Explicitly shut down (called at process exit)."""
+        self._kill()
+
+
+# Module-level singleton
+_chrome = _ChromeManager()
 
 
 def load_auth() -> tuple[str | None, str | None]:
@@ -161,15 +273,59 @@ def _random_delay(page, min_ms: int = 500, max_ms: int = 2000):
     page.wait_for_timeout(random.randint(min_ms, max_ms))
 
 
-def _is_session_expired(page) -> bool:
-    """Check if the browser was redirected to the login page (session expired)."""
-    url = page.url.lower()
-    if "login" in url:
-        return True
-    body_text = page.evaluate("() => document.body.innerText.substring(0, 500)")
-    if "heavy traffic" in body_text.lower() or "server maintenance" in body_text.lower():
-        return True
+def _auto_login(page, timeout: int = 180):
+    """Auto-fill password and login, then wait for search page."""
+    import os as _os
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    password = _os.environ.get("ANA_PASSWORD")
+    if not password and env_path.exists():
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("ANA_PASSWORD="):
+                    password = line.split("=", 1)[1].strip().strip("'\"")
+
+    if password:
+        pwd_field = page.locator("#password")
+        if pwd_field.count() > 0 and pwd_field.first.is_visible(timeout=3000):
+            pwd_field.first.fill(password)
+            _random_delay(page, 300, 600)
+            login_btn = page.locator("#amcMemberLogin")
+            if login_btn.count() == 0:
+                login_btn = page.locator("input[value='Login']")
+            if login_btn.count() > 0:
+                login_btn.first.click()
+                print("  Auto-login submitted, waiting for redirect...")
+
+    # Wait for page to leave login
+    poll_interval = 3
+    waited = 0
+    while waited < timeout:
+        page.wait_for_timeout(poll_interval * 1000)
+        waited += poll_interval
+        if not _is_on_login_page(page):
+            return
+        if waited % 30 == 0:
+            print(f"  Still waiting for login... ({waited}s / {timeout}s)")
+
+
+def _is_on_login_page(page) -> bool:
+    """Check if we're on the login page (by page title, not URL)."""
+    try:
+        title = page.title().lower()
+        if "login" in title or "member login" in title:
+            return True
+        body_text = page.evaluate("() => document.body.innerText.substring(0, 300)")
+        if "heavy traffic" in body_text.lower() or "server maintenance" in body_text.lower():
+            return True
+    except Exception:
+        pass
     return False
+
+
+def _is_session_expired(page) -> bool:
+    """Check if redirected to login page."""
+    return _is_on_login_page(page)
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +378,7 @@ def search_awards(
     cabin: str = "economy",
     headed: bool = True,
     top: int = 10,
+    passengers: int = 1,
 ) -> AwardSearchResult:
     """Search ANA for award flights.
 
@@ -230,92 +387,123 @@ def search_awards(
 
     Note: headed=True (default) is required to bypass Akamai Bot Manager.
     """
-    from patchright.sync_api import sync_playwright
-
-    state_path, user_agent = load_auth()
-    if not state_path:
+    try:
+        page = _chrome.get_page()
+    except RuntimeError as e:
         return AwardSearchResult(
             origin=origin, dest=dest, date=depart_date,
             return_date=return_date, cabin=cabin, total_results=0,
-            flights=[], error=NO_AUTH_MSG,
+            flights=[], error=str(e),
         )
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=not headed)
-        ctx_opts = {
-            "viewport": {"width": 1280, "height": 900},
-            "locale": "en-US",
-            "storage_state": state_path,
-        }
-        if user_agent:
-            ctx_opts["user_agent"] = user_agent
-        context = browser.new_context(**ctx_opts)
-        page = context.new_page()
+    try:
+        print(f"Navigating to award search...")
+        page.goto(SEARCH_URL, wait_until="domcontentloaded", timeout=30000)
+        _random_delay(page, 3000, 5000)
 
-        try:
-            # Navigate directly to search page (cookies handle auth)
-            print(f"Navigating to award search...")
-            page.goto(SEARCH_URL, wait_until="domcontentloaded", timeout=30000)
-            _random_delay(page, 3000, 5000)
-
-            # Check if session expired (redirected to login)
+        # If redirected to login, auto-login
+        if _is_session_expired(page):
+            print("  Session expired — attempting auto-login...")
+            _auto_login(page, timeout=120)
             if _is_session_expired(page):
                 return AwardSearchResult(
                     origin=origin, dest=dest, date=depart_date,
                     return_date=return_date, cabin=cabin, total_results=0,
                     flights=[], error=EXPIRED_MSG,
                 )
+            print("  Login successful!")
+            _random_delay(page, 2000, 3000)
 
-            if _check_recaptcha(page):
-                return AwardSearchResult(
-                    origin=origin, dest=dest, date=depart_date,
-                    return_date=return_date, cabin=cabin, total_results=0,
-                    flights=[], error="reCAPTCHA blocked access",
-                )
-
-            # Fill the search form
-            print(f"Filling search form: {origin}→{dest} {depart_date}...")
-            _fill_search_form(page, origin, dest, depart_date, return_date)
-            _random_delay(page, 1000, 2000)
-
-            # Submit search
-            print(f"Submitting search...")
-            submit_btn = page.locator('input[value="Search"]')
-            if submit_btn.count() == 0:
-                submit_btn = page.locator("button:has-text('Search')")
-            submit_btn.first.click()
-
-            # Wait for results (loading spinner)
-            _wait_for_loading(page)
-
-            if _check_recaptcha(page):
-                return AwardSearchResult(
-                    origin=origin, dest=dest, date=depart_date,
-                    return_date=return_date, cabin=cabin, total_results=0,
-                    flights=[], error="reCAPTCHA blocked search",
-                )
-
-            # Check for error messages
-            error = _check_error_messages(page)
-            if error:
-                return AwardSearchResult(
-                    origin=origin, dest=dest, date=depart_date,
-                    return_date=return_date, cabin=cabin, total_results=0,
-                    flights=[], error=error,
-                )
-
-            # Parse results
-            print(f"Parsing results...")
-            return _parse_results(page, origin, dest, depart_date, return_date, cabin, top)
-
-        except Exception as e:
+        if _check_recaptcha(page):
             return AwardSearchResult(
                 origin=origin, dest=dest, date=depart_date,
                 return_date=return_date, cabin=cabin, total_results=0,
-                flights=[], error=str(e),
+                flights=[], error="reCAPTCHA blocked access",
             )
-        finally:
-            browser.close()
+
+        # Submit search via JS form submission
+        print(f"Submitting search: {origin}→{dest} {depart_date}...")
+        if not return_date:
+            return_date = (datetime.strptime(depart_date, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
+
+        dt = datetime.strptime(depart_date, "%Y-%m-%d")
+        rt = datetime.strptime(return_date, "%Y-%m-%d")
+        weekdays = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
+
+        cabin_code = CABIN_MAP.get(cabin, "Y")
+        boarding_class_map = {
+            "Y": "CFF1", "PY": "CFF4", "C": "CFF2", "F": "CFF3",
+        }
+        boarding_class = boarding_class_map.get(cabin_code, "CFF1")
+
+        search_mode = "ROUND_TRIP"
+        itin_check = "roundTrip"
+
+        submit_name = page.evaluate(
+            "() => document.querySelector('input[value=\"Search\"]')?.name || 'j_idt1080'"
+        )
+
+        dep_display = f"{dt.strftime('%m/%d/%Y')} ({weekdays[dt.weekday()]})"
+        ret_display = f"{rt.strftime('%m/%d/%Y')} ({weekdays[rt.weekday()]})"
+
+        # Set values on existing form and submit (preserves JSF state)
+        page.evaluate(f"""(() => {{
+            document.getElementById('departureAirportCode:field').value = '{origin}';
+            document.getElementById('arrivalAirportCode:field').value = '{dest}';
+            document.getElementById('awardDepartureDate:field').value = '{dt.strftime("%Y%m%d")}';
+            document.getElementById('awardReturnDate:field').value = '{rt.strftime("%Y%m%d")}';
+            document.getElementById('hiddenSearchMode').value = '{search_mode}';
+            document.getElementById('itineraryButtonCheck').value = '{itin_check}';
+            document.getElementById('hiddenAction').value = 'AwardRoundTripSearchInputAction';
+            document.getElementById('hiddenBoardingClassType').value = '0';
+            document.getElementById('boardingClass').value = '{boarding_class}';
+            document.querySelector('#adult\\\\:count').value = '{passengers}';
+            const comp = document.getElementById('comparisonSearchType');
+            if (comp) comp.checked = true;
+
+            const form = document.querySelector('[id="conditionInput"]') || document.forms[0];
+            const btn = document.createElement('input');
+            btn.type = 'hidden';
+            btn.name = '{submit_name}';
+            btn.value = 'Search';
+            form.appendChild(btn);
+            form.submit();
+        }})()""")
+
+        # Wait for results page to fully load
+        page.wait_for_load_state("networkidle", timeout=60000)
+        _random_delay(page, 3000, 5000)
+        for _ in range(10):
+            if "CalendarSearchResult" in page.content():
+                break
+            page.wait_for_timeout(2000)
+
+        if _check_recaptcha(page):
+            return AwardSearchResult(
+                origin=origin, dest=dest, date=depart_date,
+                return_date=return_date, cabin=cabin, total_results=0,
+                flights=[], error="reCAPTCHA blocked search",
+            )
+
+        error = _check_error_messages(page)
+        if error:
+            return AwardSearchResult(
+                origin=origin, dest=dest, date=depart_date,
+                return_date=return_date, cabin=cabin, total_results=0,
+                flights=[], error=error,
+            )
+
+        print(f"Parsing results...")
+        return _parse_results(page, origin, dest, depart_date, return_date, cabin, top)
+
+    except Exception as e:
+        # Connection lost — kill Chrome so next call restarts it
+        _chrome._kill()
+        return AwardSearchResult(
+            origin=origin, dest=dest, date=depart_date,
+            return_date=return_date, cabin=cabin, total_results=0,
+            flights=[], error=str(e),
+        )
 
 
 def _fill_search_form(
@@ -327,124 +515,92 @@ def _fill_search_form(
     - requestedSegment:N:departureAirportCode:field
     - requestedSegment:N:departureDate:field
     """
-    # Switch to "Multiple cities / mixed classes" for better control
-    multi_tab = page.locator("li.lastChild.deselection")
-    if multi_tab.count() > 0:
-        multi_tab.first.click()
-        _random_delay(page, 1000, 2000)
-
-    # If one-way, try to find and click One-way tab
-    if not return_date:
-        oneway_tab = page.locator("text=One Way")
-        if oneway_tab.count() > 0:
-            oneway_tab.first.click()
-            _random_delay(page, 500, 1000)
-
-    # Fill departure airport
-    dep_airport = page.locator(
-        '[name="requestedSegment:0:departureAirportCode:field"]'
-    )
-    if dep_airport.count() > 0:
-        dep_airport.first.fill("")
-        _random_delay(page, 200, 400)
-        dep_airport.first.fill(origin)
-        _random_delay(page, 500, 1000)
-        # Try to select from autocomplete dropdown
-        _select_airport_option(page, origin)
-    else:
-        # Fallback: try generic airport input
-        _fill_airport_fallback(page, "departure", origin)
-
+    # Fill departure airport — type code and select from autocomplete
+    _fill_airport_field(page, "#departureAirportCode\\:field_pctext", origin)
     _random_delay(page, 500, 1000)
 
     # Fill arrival airport
-    arr_airport = page.locator(
-        '[name="requestedSegment:0:arrivalAirportCode:field"]'
-    )
-    if arr_airport.count() > 0:
-        arr_airport.first.fill("")
-        _random_delay(page, 200, 400)
-        arr_airport.first.fill(dest)
-        _random_delay(page, 500, 1000)
-        _select_airport_option(page, dest)
-    else:
-        _fill_airport_fallback(page, "arrival", dest)
-
+    _fill_airport_field(page, "#arrivalAirportCode\\:field_pctext", dest)
     _random_delay(page, 500, 1000)
 
-    # Fill departure date
+    # Fill departure date (readonly calendar field — must use JS)
     dt = datetime.strptime(depart_date, "%Y-%m-%d")
     date_val = dt.strftime("%Y%m%d")
-    date_display = dt.strftime("%m/%d/%Y")
-
-    dep_date_field = page.locator(
-        '[name="requestedSegment:0:departureDate:field"]'
-    )
-    if dep_date_field.count() > 0:
-        page.evaluate(
-            f"document.querySelector('[name=\"requestedSegment:0:departureDate:field\"]').value = '{date_val}'"
-        )
-        # Also set the display field
-        dep_date_display = page.locator(
-            '[name="requestedSegment:0:departureDate:field_pctext"]'
-        )
-        if dep_date_display.count() > 0:
-            dep_date_display.first.fill(date_display)
-    else:
-        _fill_date_fallback(page, "departure", depart_date)
-
+    weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    date_display = dt.strftime("%m/%d/%Y") + f" ({weekdays[dt.weekday()]})"
+    page.evaluate(f"""(() => {{
+        document.getElementById('awardDepartureDate:field').value = '{date_val}';
+        const el = document.getElementById('awardDepartureDate:field_pctext');
+        el.removeAttribute('readonly');
+        el.value = '{date_display}';
+        el.setAttribute('readonly', 'readonly');
+    }})()""")
     _random_delay(page, 500, 1000)
 
-    # Fill return date (if round-trip)
-    if return_date:
-        rt = datetime.strptime(return_date, "%Y-%m-%d")
-        ret_date_val = rt.strftime("%Y%m%d")
-        ret_date_display = rt.strftime("%m/%d/%Y")
-
-        # Return segment airports (reversed)
-        ret_dep = page.locator(
-            '[name="requestedSegment:1:departureAirportCode:field"]'
-        )
-        if ret_dep.count() > 0:
-            ret_dep.first.fill(dest)
-            _random_delay(page, 300, 600)
-
-        ret_arr = page.locator(
-            '[name="requestedSegment:1:arrivalAirportCode:field"]'
-        )
-        if ret_arr.count() > 0:
-            ret_arr.first.fill(origin)
-            _random_delay(page, 300, 600)
-
-        ret_date_field = page.locator(
-            '[name="requestedSegment:1:departureDate:field"]'
-        )
-        if ret_date_field.count() > 0:
-            page.evaluate(
-                f"document.querySelector('[name=\"requestedSegment:1:departureDate:field\"]').value = '{ret_date_val}'"
-            )
-            ret_date_display_el = page.locator(
-                '[name="requestedSegment:1:departureDate:field_pctext"]'
-            )
-            if ret_date_display_el.count() > 0:
-                ret_date_display_el.first.fill(ret_date_display)
-        else:
-            _fill_date_fallback(page, "return", return_date)
+    # Fill return date (ANA requires round-trip; default +7 days if not given)
+    if not return_date:
+        return_date = (dt + timedelta(days=7)).strftime("%Y-%m-%d")
+    rt = datetime.strptime(return_date, "%Y-%m-%d")
+    ret_date_val = rt.strftime("%Y%m%d")
+    ret_date_display = rt.strftime("%m/%d/%Y") + f" ({weekdays[rt.weekday()]})"
+    page.evaluate(f"""(() => {{
+        document.getElementById('awardReturnDate:field').value = '{ret_date_val}';
+        const el = document.getElementById('awardReturnDate:field_pctext');
+        el.removeAttribute('readonly');
+        el.value = '{ret_date_display}';
+        el.setAttribute('readonly', 'readonly');
+    }})()""")
 
     _random_delay(page, 300, 600)
+
+
+def _fill_airport_field(page, selector: str, code: str):
+    """Type airport code into field and select from autocomplete dropdown."""
+    field = page.locator(selector)
+    field.click()
+    _random_delay(page, 200, 400)
+    # Clear existing text
+    field.fill("")
+    _random_delay(page, 200, 300)
+    # Type code character by character for autocomplete to trigger
+    for ch in code:
+        page.keyboard.type(ch, delay=100)
+    _random_delay(page, 1000, 1500)
+
+    # Try to click matching autocomplete option
+    # ANA uses a suggestion list with airport codes
+    suggestion = page.locator(f"li:has-text('{code}')").first
+    try:
+        if suggestion.is_visible(timeout=3000):
+            suggestion.click()
+            _random_delay(page, 300, 500)
+            return
+    except Exception:
+        pass
+
+    # Fallback: try any visible suggestion list item
+    any_suggestion = page.locator(".ui-autocomplete li, .suggestionList li, [role='option']").first
+    try:
+        if any_suggestion.is_visible(timeout=1000):
+            any_suggestion.click()
+            _random_delay(page, 300, 500)
+            return
+    except Exception:
+        pass
+
+    # Last resort: Tab out to confirm
+    page.keyboard.press("Tab")
 
 
 def _select_airport_option(page, code: str):
     """Try to select an airport from the autocomplete dropdown."""
     _random_delay(page, 500, 800)
-    # ANA autocomplete shows airport suggestions
     option = page.locator(f"text={code}").first
     try:
         if option.is_visible(timeout=2000):
             option.click()
             _random_delay(page, 200, 500)
     except Exception:
-        # If no dropdown, the code in the field should suffice
         page.keyboard.press("Tab")
 
 
@@ -534,139 +690,71 @@ def _parse_results(
     page, origin: str, dest: str, depart_date: str,
     return_date: str | None, cabin: str, top: int,
 ) -> AwardSearchResult:
-    """Parse award search results from ANA's result page.
+    """Parse award search results from ANA's calendar comparison page.
 
-    Results are in tr.oneWayDisplayPlan rows with cabin columns
-    defined by tr.fareGroup header.
+    ANA returns a calendar page with JavaScript data containing miles costs
+    per departure/return date combination. We extract CalendarSearchResult
+    entries and also parse the per-day availability from the HTML.
     """
-    # NOTE: r-string for JS regex patterns
-    data = page.evaluate(r"""() => {
-        const result = { columns: [], flights: [] };
+    html = page.content()
 
-        // Parse cabin columns from header
-        const fareHeaders = document.querySelectorAll('tr.fareGroup th');
-        fareHeaders.forEach(th => {
-            result.columns.push(th.textContent.trim().toLowerCase());
-        });
-
-        // Parse flight rows
-        const rows = document.querySelectorAll('tr.oneWayDisplayPlan');
-        rows.forEach(row => {
-            const flight = { segments: [], availability: {} };
-
-            // Parse availability per cabin column
-            const cells = row.querySelectorAll('td');
-            result.columns.forEach((cabin, i) => {
-                if (i < cells.length) {
-                    const text = cells[i].textContent.trim().toLowerCase();
-                    if (text.includes('available')) {
-                        flight.availability[cabin] = 'available';
-                    } else if (text.includes('waitlisted')) {
-                        flight.availability[cabin] = 'waitlisted';
-                    } else {
-                        flight.availability[cabin] = 'unavailable';
-                    }
-                }
-            });
-
-            // Parse segment info from designTr elements
-            const segDivs = row.querySelectorAll('div.designTr');
-            segDivs.forEach(seg => {
-                const tds = seg.querySelectorAll('div.designTd');
-                if (tds.length >= 2) {
-                    flight.segments.push({
-                        text: Array.from(tds).map(td => td.textContent.trim()).join(' | ')
-                    });
-                }
-            });
-
-            // Get full row text for additional parsing
-            flight.rowText = row.textContent.trim();
-
-            result.flights.push(flight);
-        });
-
-        // Also try to count total results
-        const countEl = document.querySelector('.resultCount, .searchResultCount');
-        result.totalCount = countEl ? countEl.textContent.trim() : '';
-
-        return result;
-    }""")
-
-    columns = data.get("columns", [])
-    flights_data = data.get("flights", [])
-
-    all_flights = []
-    for fd in flights_data:
-        availability = fd.get("availability", {})
-        row_text = fd.get("rowText", "")
-
-        # Extract flight number
-        flight_match = re.search(r"([A-Z]{2}\s*\d{1,5})", row_text)
-        flight_number = flight_match.group(1) if flight_match else ""
-        airline_code = flight_number[:2] if flight_number else ""
-
-        # Extract times
-        times = re.findall(r"(\d{2}:\d{2})", row_text)
-        dep_time = times[0] if len(times) > 0 else ""
-        arr_time = times[1] if len(times) > 1 else ""
-
-        # Extract duration
-        dur_match = re.search(r"(\d+h\s*\d*m?)", row_text)
-        duration = dur_match.group(1) if dur_match else ""
-
-        # Count stops
-        segments = fd.get("segments", [])
-        stops = max(0, len(segments) // 3 - 1)  # rough estimate
-
-        # Aircraft
-        aircraft_match = re.search(r"\b([A-Z0-9]{3,4})\b", row_text)
-        aircraft = ""
-        if aircraft_match:
-            code = aircraft_match.group(1)
-            if code not in (origin, dest, flight_number.replace(" ", "")):
-                aircraft = code
-
-        # Create one AwardFlight per available cabin
-        for cabin_name, status in availability.items():
-            mapped_cabin = CABIN_NAMES.get(cabin_name, cabin_name)
-            # ANA award miles vary by route/cabin but we don't see the
-            # exact number on the availability page — mark as available/not
-            all_flights.append(AwardFlight(
-                flight_number=flight_number,
-                airline=airline_code,
-                duration=duration,
-                departure_time=dep_time,
-                arrival_time=arr_time,
-                origin=origin,
-                dest=dest,
-                stops=stops,
-                cabin=mapped_cabin,
-                miles=0,        # ANA doesn't show miles on result page
-                miles_str="—",  # availability only
-                status=status,
-                aircraft=aircraft,
-            ))
-
-    # Filter to requested cabin if specified
-    if cabin != "all":
-        all_flights = [f for f in all_flights if f.cabin == cabin or f.status == "available"]
-
-    # Sort: available first, then by cabin class
-    cabin_order = {"first": 0, "business": 1, "premium": 2, "economy": 3}
-    all_flights.sort(
-        key=lambda f: (
-            0 if f.status == "available" else 1,
-            cabin_order.get(f.cabin, 9),
-        )
+    # Extract CalendarSearchResult data from JavaScript
+    # Format: CalendarSearchResult("20260929","20261005","20,000")
+    # These are grouped by departure date (tempArray blocks)
+    entries = re.findall(
+        r'var returnDate = "(\d{8})";var milesCost = \'([^\']*)\';'
+        r'\s*tempArray\.push\(new CalendarList\.CalendarSearchResult\("(\d{8})"',
+        html,
     )
+
+    # Build miles grid: {(depart_date, return_date): miles}
+    miles_grid = {}
+    for ret_date_raw, miles_str, dep_date_raw in entries:
+        if miles_str != '-':
+            dep = f"{dep_date_raw[:4]}-{dep_date_raw[4:6]}-{dep_date_raw[6:]}"
+            ret = f"{ret_date_raw[:4]}-{ret_date_raw[4:6]}-{ret_date_raw[6:]}"
+            miles_val = int(miles_str.replace(',', ''))
+            miles_grid[(dep, ret)] = miles_val
+
+    # Extract per-day availability from HTML status elements
+    day_avail = {}  # {(direction, date_str): "available" | "unavailable"}
+    for match in re.finditer(
+        r'simpleCalendarDateGroup(OutBound|InBound)\d+.*?</td>', html, re.S
+    ):
+        direction = match.group(1)
+        cell = match.group(0)
+        date_match = re.search(r'>((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+)', cell)
+        status_match = re.search(r'class="status[^"]*">([^<]+)<', cell)
+        if date_match and status_match:
+            day_avail[(direction, date_match.group(1))] = status_match.group(1).strip()
+
+    # Build AwardFlight entries from the miles grid
+    all_flights = []
+    for (dep, ret), miles in sorted(miles_grid.items()):
+        miles_k = f"{miles // 1000}k" if miles >= 1000 else str(miles)
+        all_flights.append(AwardFlight(
+            flight_number="",
+            airline="ANA",
+            duration="",
+            departure_time=dep,
+            arrival_time=ret,
+            origin=origin,
+            dest=dest,
+            stops=0,
+            cabin=cabin,
+            miles=miles,
+            miles_str=miles_k,
+            status="available",
+            aircraft="",
+        ))
+
+    # Sort by miles (cheapest first)
+    all_flights.sort(key=lambda f: f.miles)
 
     if top > 0:
         all_flights = all_flights[:top]
 
-    total_text = data.get("totalCount", "")
-    total_match = re.search(r"(\d+)", total_text)
-    total = int(total_match.group(1)) if total_match else len(flights_data)
+    total = len(all_flights)
 
     return AwardSearchResult(
         origin=origin, dest=dest, date=depart_date,
@@ -691,85 +779,69 @@ def search_calendar(
     ANA's calendar page (cam.ana.co.jp) shows 6 months of availability
     with O/X indicators per cabin class. Uses pre-saved session cookies.
     """
-    from patchright.sync_api import sync_playwright
-
-    state_path, user_agent = load_auth()
-    if not state_path:
+    try:
+        page = _chrome.get_page()
+    except RuntimeError as e:
         return CalendarResult(
             origin=origin, dest=dest, year=year, month=month,
-            months_data=[], error=NO_AUTH_MSG,
+            months_data=[], error=str(e),
         )
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=not headed)
-        ctx_opts = {
-            "viewport": {"width": 1280, "height": 900},
-            "locale": "en-US",
-            "storage_state": state_path,
-        }
-        if user_agent:
-            ctx_opts["user_agent"] = user_agent
-        context = browser.new_context(**ctx_opts)
-        page = context.new_page()
+    try:
+        print("Navigating to award calendar...")
+        page.goto(CALENDAR_URL, wait_until="domcontentloaded", timeout=30000)
+        _random_delay(page, 3000, 5000)
 
-        try:
-            # Navigate to calendar page (cookies handle auth)
-            print("Navigating to award calendar...")
-            page.goto(CALENDAR_URL, wait_until="domcontentloaded", timeout=30000)
-            _random_delay(page, 3000, 5000)
-
-            # Check if session expired
+        if _is_session_expired(page):
+            print("  Session expired — attempting auto-login...")
+            _auto_login(page, timeout=120)
             if _is_session_expired(page):
                 return CalendarResult(
                     origin=origin, dest=dest, year=year, month=month,
                     months_data=[], error=EXPIRED_MSG,
                 )
 
-            if _check_recaptcha(page):
-                return CalendarResult(
-                    origin=origin, dest=dest, year=year, month=month,
-                    months_data=[], error="reCAPTCHA blocked access",
-                )
-
-            # Fill calendar form
-            print(f"Searching calendar: {origin}→{dest} from {year}-{month:02d}...")
-            _fill_calendar_form(page, origin, dest, year, month)
-
-            # Submit
-            submit = page.locator('input[value="Search"]')
-            if submit.count() == 0:
-                submit = page.locator("button:has-text('Search')")
-            if submit.count() > 0:
-                submit.first.click()
-            else:
-                page.keyboard.press("Enter")
-
-            _wait_for_loading(page, timeout_ms=45000)
-
-            if _check_recaptcha(page):
-                return CalendarResult(
-                    origin=origin, dest=dest, year=year, month=month,
-                    months_data=[], error="reCAPTCHA blocked calendar search",
-                )
-
-            error = _check_error_messages(page)
-            if error:
-                return CalendarResult(
-                    origin=origin, dest=dest, year=year, month=month,
-                    months_data=[], error=error,
-                )
-
-            # Parse calendar results
-            print("Parsing calendar...")
-            return _parse_calendar(page, origin, dest, year, month)
-
-        except Exception as e:
+        if _check_recaptcha(page):
             return CalendarResult(
                 origin=origin, dest=dest, year=year, month=month,
-                months_data=[], error=str(e),
+                months_data=[], error="reCAPTCHA blocked access",
             )
-        finally:
-            browser.close()
+
+        print(f"Searching calendar: {origin}→{dest} from {year}-{month:02d}...")
+        _fill_calendar_form(page, origin, dest, year, month)
+
+        submit = page.locator('input[value="Search"]')
+        if submit.count() == 0:
+            submit = page.locator("button:has-text('Search')")
+        if submit.count() > 0:
+            submit.first.click()
+        else:
+            page.keyboard.press("Enter")
+
+        _wait_for_loading(page, timeout_ms=45000)
+
+        if _check_recaptcha(page):
+            return CalendarResult(
+                origin=origin, dest=dest, year=year, month=month,
+                months_data=[], error="reCAPTCHA blocked calendar search",
+            )
+
+        error = _check_error_messages(page)
+        if error:
+            return CalendarResult(
+                origin=origin, dest=dest, year=year, month=month,
+                months_data=[], error=error,
+            )
+
+        print("Parsing calendar...")
+        return _parse_calendar(page, origin, dest, year, month)
+
+    except Exception as e:
+        _chrome._kill()
+        return CalendarResult(
+            origin=origin, dest=dest, year=year, month=month,
+            months_data=[], error=str(e),
+        )
 
 
 def _fill_calendar_form(page, origin: str, dest: str, year: int, month: int):
@@ -935,26 +1007,39 @@ def format_table(result: AwardSearchResult) -> str:
         lines.append("  No award flights found")
         return "\n".join(lines)
 
-    lines.append(
-        f"  {'#':<3} {'Flight':<10} {'Cabin':<10} {'Status':<12} "
-        f"{'Duration':<8} {'Depart':>8} {'Arrive':>8} {'Stops':>5} {'Aircraft'}"
-    )
-    lines.append(
-        f"  {'-'*3} {'-'*10} {'-'*10} {'-'*12} "
-        f"{'-'*8} {'-'*8} {'-'*8} {'-'*5} {'-'*8}"
-    )
+    # Check if this is calendar-style data (dates in departure/arrival fields)
+    is_calendar = result.flights[0].miles > 0 and "-" in result.flights[0].departure_time
 
-    for i, f in enumerate(result.flights, 1):
-        status_display = {
-            "available": "✓ avail",
-            "waitlisted": "~ waitlist",
-            "unavailable": "✗ n/a",
-        }.get(f.status, f.status)
-
+    if is_calendar:
         lines.append(
-            f"  {i:<3} {f.flight_number:<10} {f.cabin:<10} {status_display:<12} "
-            f"{f.duration:<8} {f.departure_time:>8} {f.arrival_time:>8} {f.stops:>5} {f.aircraft}"
+            f"  {'#':<3} {'Depart':<12} {'Return':<12} {'Miles':>8} {'Route'}"
         )
+        lines.append(
+            f"  {'-'*3} {'-'*12} {'-'*12} {'-'*8} {'-'*20}"
+        )
+        for i, f in enumerate(result.flights, 1):
+            lines.append(
+                f"  {i:<3} {f.departure_time:<12} {f.arrival_time:<12} {f.miles:>8,} {f.origin}-{f.dest}"
+            )
+    else:
+        lines.append(
+            f"  {'#':<3} {'Flight':<10} {'Cabin':<10} {'Status':<12} "
+            f"{'Duration':<8} {'Depart':>8} {'Arrive':>8} {'Stops':>5} {'Aircraft'}"
+        )
+        lines.append(
+            f"  {'-'*3} {'-'*10} {'-'*10} {'-'*12} "
+            f"{'-'*8} {'-'*8} {'-'*8} {'-'*5} {'-'*8}"
+        )
+        for i, f in enumerate(result.flights, 1):
+            status_display = {
+                "available": "avail",
+                "waitlisted": "waitlist",
+                "unavailable": "n/a",
+            }.get(f.status, f.status)
+            lines.append(
+                f"  {i:<3} {f.flight_number:<10} {f.cabin:<10} {status_display:<12} "
+                f"{f.duration:<8} {f.departure_time:>8} {f.arrival_time:>8} {f.stops:>5} {f.aircraft}"
+            )
 
     return "\n".join(lines)
 
@@ -1070,6 +1155,10 @@ def main():
         "--headless", action="store_true",
         help="Run browser in headless mode (may be blocked by anti-bot)",
     )
+    parser.add_argument(
+        "--passengers", type=int, default=1,
+        help="Number of adult passengers (default: 1)",
+    )
 
     args = parser.parse_args()
 
@@ -1121,6 +1210,7 @@ def main():
             cabin=args.cabin,
             headed=not args.headless,
             top=args.top,
+            passengers=args.passengers,
         )
 
         if args.format == "json":
