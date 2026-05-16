@@ -236,11 +236,31 @@ TELEGRAM_CHAT_ID=your-chat-id
 
 4. Set `notifications.telegram.enabled` to `true` in `watchlist.json`
 
-### Scheduled Scans (crontab)
+### Scheduled Scans (systemd timers)
+
+Migrated from Mac cron to systemd **user** timers on the VPS
+(srv1673030). The VPS is `Etc/UTC`; `OnCalendar` carries an explicit
+`Asia/Taipei` suffix so the wall-clock matches the original Mac schedule.
+
+| Timer | OnCalendar (Asia/Taipei) | Runs |
+|-------|--------------------------|------|
+| `flightsearch-summary.timer` | `08:00` — `Persistent=true` | `tools/price_tracker.py --alert --daily-summary` |
+| `flightsearch-alert.timer` | `02:00, 14:00, 20:00` — `Persistent=false` | `tools/price_tracker.py --alert --notify` |
+
+- Units live in `~/.config/systemd/user/`; `Type=oneshot`,
+  `WorkingDirectory=/home/tomson/workspace/FlightSearch`.
+- `ExecStart` uses the project venv `.venv/bin/python` — the VPS is
+  PEP668-managed, so deps install into `.venv`, never system pip.
+- stdout+stderr append to `data/tracker.log` (mirrors the old cron
+  `>> data/tracker.log 2>&1`).
+- `.env` (`TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`) is read natively by
+  `load_dotenv()` from the repo root (chmod 600, gitignored).
 
 ```bash
-# Scan twice daily at 9:00 and 21:00
-0 9,21 * * * cd /home/tomson/workspace/FlightSearch && python3 tools/price_tracker.py --alert >> data/tracker.log 2>&1
+# Manage
+systemctl --user list-timers | grep flightsearch
+systemctl --user status flightsearch-summary.timer flightsearch-alert.timer
+systemctl --user start flightsearch-summary.service   # run a scan now
 ```
 
 ## How Anomaly Detection Works
