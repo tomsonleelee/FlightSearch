@@ -240,7 +240,7 @@ TELEGRAM_CHAT_ID=your-chat-id
 
 ```bash
 # Scan twice daily at 9:00 and 21:00
-0 9,21 * * * cd ~/Projects/FlightSearch && python3 tools/price_tracker.py --alert >> data/tracker.log 2>&1
+0 9,21 * * * cd /home/tomson/workspace/FlightSearch && python3 tools/price_tracker.py --alert >> data/tracker.log 2>&1
 ```
 
 ## How Anomaly Detection Works
