@@ -1,0 +1,17 @@
+# FlightSearch — Python dependencies
+#
+# The daily price-cron chain (price_tracker.py → search_flights.py →
+# price_alert.py → build_url.py) is pure Python stdlib EXCEPT Playwright.
+# Verified on Python 3.12.3 (VPS srv1673030): py_compile + import chain
+# clean, no 3.13-only syntax — 3.12 is sufficient.
+#
+# greenlet / pyee / typing_extensions are Playwright's transitive deps and
+# resolve automatically; only the direct dependency is pinned here.
+#
+# Install:  .venv/bin/pip install -r requirements.txt
+#           .venv/bin/python -m playwright install chromium
+#
+# Out of scope for this pin: patchright / ANA award-search extras
+# (tools/ana_*.py) — not part of the price-cron migration (task #26).
+
+playwright==1.59.0
