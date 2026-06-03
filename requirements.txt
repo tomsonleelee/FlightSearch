@@ -15,3 +15,8 @@
 # (tools/ana_*.py) — not part of the price-cron migration (task #26).
 
 playwright==1.59.0
+
+# fare_aggregator.py (bug-fare phase 1) — pure stdlib for RSS / HTTP / Telegram.
+# RSS parsed via xml.etree.ElementTree, LLM called via urllib.request, no
+# feedparser / google-generativeai needed. SecretFlying RSS is Cloudflare-
+# protected → routed through the existing playwright dep above (zero new pin).

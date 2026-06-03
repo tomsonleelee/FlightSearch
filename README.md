@@ -10,6 +10,7 @@ flights using headless browser automation — zero API keys, zero LLM tokens.
 - **Automated Search** — Playwright headless Chromium, parallel execution, structured output
 - **Price Tracking** — scheduled scans with SQLite persistence
 - **Anomaly Detection** — Z-score based low-price alerts with Telegram notifications
+- **Bug-Fare Aggregator** — hourly digest of mistake fares from external sources (TheFlightDeal, SecretFlying) parsed via vision LLM
 - **Award Search** — Alaska Airlines mileage ticket search with anti-bot bypass (Patchright)
 - **ANA Award Search** — ANA Mileage Club international award search via CDP Chrome + auto-login
 
@@ -246,6 +247,7 @@ Migrated from Mac cron to systemd **user** timers on the VPS
 |-------|--------------------------|------|
 | `flightsearch-summary.timer` | `08:00` — `Persistent=true` | `tools/price_tracker.py --alert --daily-summary` |
 | `flightsearch-alert.timer` | `02:00, 14:00, 20:00` — `Persistent=false` | `tools/price_tracker.py --alert --notify` |
+| `flightsearch-bugfare.timer` | `08..23:00` hourly — `Persistent=true` | `fare_aggregator.py` (bug-fare digest) |
 
 - Units live in `~/.config/systemd/user/`; `Type=oneshot`,
   `WorkingDirectory=/home/tomson/workspace/FlightSearch`.
@@ -262,6 +264,40 @@ systemctl --user list-timers | grep flightsearch
 systemctl --user status flightsearch-summary.timer flightsearch-alert.timer
 systemctl --user start flightsearch-summary.service   # run a scan now
 ```
+
+### fare_aggregator.py — Bug-Fare Aggregator
+
+Aggregates mistake-fare deals from external sources, parses them with a
+vision-capable LLM (Gemini 2.5 Flash via OpenRouter), dedups via SHA-256
+of `(source, guid, pub_date)`, and pushes a Telegram digest of any new
+finds. Completely separate concern from the watchlist Z-score path —
+own table (`bug_fares`), own timer, own log.
+
+```bash
+# Manual run (one tick)
+.venv/bin/python fare_aggregator.py
+
+# Backfill DB without spamming Telegram (use after long downtime)
+.venv/bin/python fare_aggregator.py --no-alert
+
+# Preview parsing without DB writes
+.venv/bin/python fare_aggregator.py --dry-run
+```
+
+**Sources (phase 1):**
+
+| Source | Fetcher | Notes |
+|--------|---------|-------|
+| TheFlightDeal | plain `urllib.request` | Standard WP RSS, 16 items/day |
+| SecretFlying | headless Chromium homepage scrape | `/feed/` is 301-redirected by the WP server, all alt feed paths sit behind Cloudflare managed-challenge — the homepage HTML exposes 10-15 deal cards with full route+price in the `<a title=...>` attr, which is the only signal the LLM needs |
+| bonbon.map (IG) | _disabled in phase 1_ | rsshub.app public instance is fully blocked by Cloudflare (managed-challenge survives even Playwright stealth). Hook remains in `SOURCES` for phase-2 re-enable via self-hosted rsshub or alt IG path |
+
+**Env:** `OPENROUTER_API_KEY` in `.env` (model `google/gemini-2.5-flash`).
+Telegram uses the same `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` as the
+anomaly alert. Output log at `data/bugfare.log`.
+
+**Storage:** `data/prices.db` adds a `bug_fares` table; existing tables
+are untouched.
 
 ## How Anomaly Detection Works
 

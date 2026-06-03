@@ -24,6 +24,7 @@ ana_setup.py → ana_award_search.py
 - **`tools/search_flights.py`**：Playwright 無頭瀏覽器自動搜尋，直接輸出結構化結果
 - **`tools/price_tracker.py`**：排程掃描監控航線，存入 SQLite
 - **`tools/price_alert.py`**：Z-score 異常偵測 + Telegram 通知
+- **`fare_aggregator.py`**（repo 根）：BUG fare 聚合 — TheFlightDeal RSS + SecretFlying homepage scrape，Gemini 2.5 Flash 解析、SHA-256 dedup、Telegram 摘要；獨立 `bug_fares` 表 + `flightsearch-bugfare.timer` hourly 08-23 Asia/Taipei
 - **`tools/award_search.py`**：Alaska Airlines 里程票搜尋（Patchright 反偵測瀏覽器）+ 月曆視圖
 - **`tools/ana_setup.py`**：ANA 登入設定 — CDP 開正常 Chrome 讓人類登入，存 cookie 到 `auth/`
 - **`tools/ana_award_search.py`**：ANA 里程票搜尋（CDP Chrome + JS 表單提交 + 自動登入）+ 月曆視圖
@@ -232,6 +233,32 @@ python3 tools/price_alert.py --summary
 5. 同航線同天只警報一次（alerts 表去重）
 
 **Telegram 設定：** watchlist.json 啟用 + `.env` 設定 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_CHAT_ID`
+
+### fare_aggregator.py — BUG fare 聚合
+
+把外部來源（部落格 / IG）的神票 / mistake fare 貼文聚合成 Telegram 摘要。與 watchlist Z-score 完全分離 — 獨立資料表 `bug_fares`、獨立 timer、獨立 log。
+
+```bash
+# 手動跑一次
+.venv/bin/python fare_aggregator.py
+
+# 補資料但不發 Telegram（VPS 久離線後第一輪用）
+.venv/bin/python fare_aggregator.py --no-alert
+
+# 只解析、不寫 DB
+.venv/bin/python fare_aggregator.py --dry-run
+```
+
+**Phase 1 來源：**
+- **TheFlightDeal**：標準 WP RSS（`urllib.request` 直接抓，無 CF 阻擋），~16 則/天
+- **SecretFlying**：`/feed/` 被伺服器 301 重導到首頁、所有 alt feed 路徑被 Cloudflare managed-challenge 擋；改用 headless Chromium 抓首頁 HTML、用 regex 解 `<a title="...">` 取得 10-15 張 deal 卡（title 已含 route+price 全資訊，LLM 不需再 fetch 每篇）
+- **bonbon.map (IG)**：phase 1 **停用** — rsshub.app 公共 instance 完全被 Cloudflare 擋（連 patchright stealth 都過不去）；hook 留在 `SOURCES` 等 phase 2 用自架 rsshub 或別的 IG 來源
+
+**LLM：** OpenRouter `google/gemini-2.5-flash`（多模態、便宜、實測活著）。`.env` 需 `OPENROUTER_API_KEY`（從 Airo .env 已 append 過）。Prompt 強制 JSON 輸出 + 繁中 summary。
+
+**Dedup：** SHA-256 of `(source, item_guid, pub_date)` → `bug_fares.dedup_hash` PK。重跑 tick 時已存在則跳過 LLM 解析。
+
+**Telegram：** 把同 tick 的多筆新發現 collapse 成一封摘要（避免 spam）；4096 字元自動分段。沒新發現就靜默。
 
 ### award_search.py — Alaska Airlines 里程票搜尋
 
