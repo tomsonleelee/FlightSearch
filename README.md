@@ -171,11 +171,22 @@ python3 tools/alaska_award_watch.py \
     --output results/alaska_award_watch.md
 ```
 
+Build a browser-free monthly calendar by scanning every day with bounded curl
+concurrency:
+
+```bash
+python3 tools/alaska_award_watch.py \
+    --route BKK-FRA --passengers 2 --cabin business \
+    --max-points 75000 --calendar 2026-10 --workers 4 \
+    --output results/bkk_fra_2026-10_calendar.md
+```
+
 `--max-points` caps points per person; use `--max-total-points` to cap the
 entire booking. Each report includes the Alaska search link, taxes, seat count,
-flight numbers, and aircraft. The page payload is not a stable public API, so
-always open the link and verify availability before booking or transferring
-points.
+flight numbers, and aircraft. `--calendar YYYY-MM` makes one curl request per
+day and marks each route's lowest point price with `*`. The page payload is not
+a stable public API, so always open the link and verify availability before
+booking or transferring points.
 
 ### ana_award_search.py — ANA Mileage Club Award Search
 
