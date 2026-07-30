@@ -12,6 +12,7 @@ flights using headless browser automation — zero API keys, zero LLM tokens.
 - **Anomaly Detection** — Z-score based low-price alerts with Telegram notifications
 - **Bug-Fare Aggregator** — hourly digest of mistake fares from external sources (TheFlightDeal, SecretFlying) parsed via vision LLM
 - **Award Search** — Alaska Airlines mileage ticket search with anti-bot bypass (Patchright)
+- **Lightweight Award Watch** — Alaska Atmos award scan with bounded parallel `curl` requests
 - **ANA Award Search** — ANA Mileage Club international award search via CDP Chrome + auto-login
 
 ## Requirements
@@ -20,6 +21,7 @@ flights using headless browser automation — zero API keys, zero LLM tokens.
 - Playwright (`pip install playwright && playwright install chromium`)
 - Patchright (`pip install patchright && patchright install chromium`) — for award search only
 - Google Chrome — required for ANA award search (CDP mode uses system Chrome)
+- `curl` — required for `alaska_award_watch.py`
 
 No other dependencies. All tools use Python standard library + browser automation.
 A virtual environment (`.venv/`) is recommended for dependency isolation.
@@ -150,6 +152,30 @@ python3 tools/award_search.py SEA LAX 2026-10-01 --format json
 
 **Note:** Headed mode (default) is required — Akamai blocks headless browsers.
 The `--headless` flag is available but results may be empty.
+
+### alaska_award_watch.py — Lightweight Alaska Atmos Award Watch
+
+Fetches Alaska's award-result page with `curl` and extracts serialized award
+itineraries locally, so it does not launch a browser. It supports repeatable
+routes, passenger count, cabin, point caps, explicit dates, and fixed monthly
+scan schedules.
+
+```bash
+python3 tools/alaska_award_watch.py \
+    --route BKK-FRA --route HKG-LHR \
+    --passengers 2 --cabin business \
+    --max-points 75000 \
+    --start 2026-08-01 --end 2027-06-30 \
+    --day-of-month 3,10,17,24 \
+    --workers 4 \
+    --output results/alaska_award_watch.md
+```
+
+`--max-points` caps points per person; use `--max-total-points` to cap the
+entire booking. Each report includes the Alaska search link, taxes, seat count,
+flight numbers, and aircraft. The page payload is not a stable public API, so
+always open the link and verify availability before booking or transferring
+points.
 
 ### ana_award_search.py — ANA Mileage Club Award Search
 
