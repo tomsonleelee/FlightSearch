@@ -26,6 +26,8 @@ ana_setup.py → ana_award_search.py
 - **`tools/price_alert.py`**：Z-score 異常偵測 + Telegram 通知
 - **`fare_aggregator.py`**（repo 根）：BUG fare 聚合 — TheFlightDeal RSS + SecretFlying homepage scrape，Gemini 2.5 Flash 解析、SHA-256 dedup、Telegram 摘要；獨立 `bug_fares` 表 + `flightsearch-bugfare.timer` hourly 08-23 Asia/Taipei
 - **`tools/award_search.py`**：Alaska Airlines 里程票搜尋（Patchright 反偵測瀏覽器）+ 月曆視圖
+- **`tools/alaska_award_watch.py`**：Alaska 獎勵票輕量掃描 — 純 `curl` 抓 award 結果頁、本地解析，不開瀏覽器；支援多航線／點數上限／月曆模式
+- **`tools/alaska_daily_watch.py`**：上者的排程封裝 — **每日 03:00**（`alaska-award-watch.timer`、2026-08-02 從 07:00 提前）產報告到 `results/` **並發 Telegram 摘要**。**每輪跑兩段**：①全 32 條 × 商務艙 × ≤75,000 點 ②**20 條 TPE→亞洲短程** × 經濟艙 × ≤30,000 點（2026-08-01 加，因為赫爾辛基線根本沒商務艙位、只掃商務等於濾掉唯一存在的東西）。**經濟艙用明確清單、不可用 `TPE-*` 前綴推導**（會誤含倫敦/洛杉磯等跨洋線，tomson 明講經濟艙只要亞洲短程）。實測**多數航線都有位**（TPE-HKG／TPE-BKK／TPE-NRT 皆 7,500 點/人起，另一批約 25,000）。⚠️ 首次探測曾誤判「只有 NRT/HND 有位」——因為月曆端點**被限流後回傳失敗，而探測把失敗當成沒位**（NRT/HND 正好是清單前兩個、限流前跑完）。**失敗 ≠ 沒有獎勵位**；預篩現在會回報失敗次數讓這種降級看得見。摘要**先講與昨天的差異**（新增／消失／變便宜），基準存 `data/alaska_award_state.json`（**分艙等 key**、兩段互不覆蓋、可讀舊扁平格式）；**只有完整掃描會更新基準**，避免 `--routes` 子集把沒掃到的航線誤判成「消失」。**並行數 2**（原 4；tomson 要求「掃慢一點但早一點啟動、確保 08:00 拿得到」→ 放慢一半約 3.5 小時、提前到 03:00 仍有 1 小時餘裕；`--workers N` 可覆蓋）。**預篩 2026-08-04 起預設關閉**（tomson 拍板）——端點失敗 561/572、只省 1.1% 查詢；放慢並行也無改善（證明限流與我方速率無關），`--prefilter` 可重新開啟。測試務必加 `--no-notify`（預設會通知，因為「靜靜不通知」正是 2026-08-01 踩過的坑）
 - **`tools/ana_setup.py`**：ANA 登入設定 — CDP 開正常 Chrome 讓人類登入，存 cookie 到 `auth/`
 - **`tools/ana_award_search.py`**：ANA 里程票搜尋（CDP Chrome + JS 表單提交 + 自動登入）+ 月曆視圖
 

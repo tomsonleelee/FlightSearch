@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 data/*.db
 data/*.log
+data/alaska_award_state.json
 .env
 auth/
 ref/

@@ -35,6 +35,11 @@ from typing import Iterable
 from urllib.parse import urlencode
 
 
+BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
 SEARCH_URL = "https://www.alaskaair.com/search/results"
 CURL_TIMEOUT_SECONDS = 25
 CABIN_COLUMNS = {
@@ -166,15 +171,38 @@ def fetch_html(url: str) -> str:
         "--show-error",
         "--max-time",
         str(CURL_TIMEOUT_SECONDS),
-        "--user-agent",
-        "Mozilla/5.0 (compatible; AtmosAwardWatch/1.0)",
+        # Alaska answers 406 to requests that don't look like a browser — an
+        # honest bot UA with `Accept: */*` gets rejected site-wide, including
+        # the homepage. Verified 2026-08-09 on one URL, same IP, same minute:
+        # bot UA -> 406; browser UA alone -> 406; browser UA + these headers
+        # -> 200 with the full 3MB results page. So this was never an IP ban.
+        "--user-agent", BROWSER_UA,
+        "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,"
+              "image/avif,image/webp,*/*;q=0.8",
+        "-H", "Accept-Language: en-US,en;q=0.9",
+        "-H", "Upgrade-Insecure-Requests: 1",
+        "-H", "Sec-Fetch-Mode: navigate",
+        "-H", "Sec-Fetch-Site: none",
+        "-H", "Sec-Fetch-Dest: document",
         url,
     ]
     completed = subprocess.run(command, check=False, capture_output=True, text=True)
     if completed.returncode:
         message = completed.stderr.strip() or f"curl exited with {completed.returncode}"
         raise RuntimeError(message)
-    return completed.stdout
+    body = completed.stdout
+    # Akamai answers some requests with a ~3KB "Client Challenge" stub instead
+    # of results. It is HTTP 200 and parses cleanly as "no itineraries", so
+    # until 2026-08-06 a blocked route was indistinguishable from a route with
+    # no award space — the 08-06 sweep reported "economy 0 hits, 0 failures"
+    # while the calendar endpoint showed TPE-NRT had awards on 93 of 93 days.
+    # A block must surface as a failure, never as an empty result.
+    if len(body) < 20_000 and "Client Challenge" in body:
+        raise RuntimeError(
+            "Alaska bot challenge (Client Challenge page returned instead of "
+            f"results; {len(body)} bytes) — treat as blocked, NOT as no availability"
+        )
+    return body
 
 
 def find_number(text: str, name: str, default: int | None = None) -> int | None:

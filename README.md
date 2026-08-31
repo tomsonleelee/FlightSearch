@@ -188,6 +188,68 @@ day and marks each route's lowest point price with `*`. The page payload is not
 a stable public API, so always open the link and verify availability before
 booking or transferring points.
 
+### alaska_daily_watch.py — Scheduled Daily Award Sweep (2 pax)
+
+Wraps `alaska_award_watch.py` for the standing wishlist, writing one
+Traditional-Chinese report into `results/` plus a Telegram digest. Read-only —
+it never logs in, transfers points, or books. Each run makes two passes:
+
+| Pass | Routes | Cabin | Cap / person |
+|---|---|---|---|
+| 1 | all 32 long-haul | business | 75,000 |
+| 2 | 20 short-haul TPE→Asia | economy | 30,000 |
+
+The economy pass was added 2026-08-01: the Helsinki routes turned out to have
+no business award space at all — not even for a single passenger on days that
+had awards — so a business-only sweep was filtering out the only thing on
+offer. It covers short-haul Asia only (no transoceanic legs) and is an explicit
+list, not a `TPE-*` prefix match, which would pull in London and Los Angeles.
+
+Most of these routes do have award space: TPE-HKG and TPE-BKK price from 7,500
+points/person, TPE-NRT 7,500 on a Starlux direct, and a second tier around
+25,000. (An initial probe concluded only NRT and HND had anything — it was
+wrong, because the calendar endpoint had begun rate-limiting and the probe read
+a failed call as an empty result. The pre-filter now reports its failed-call
+count so that degradation is visible rather than silent.)
+
+Both passes appear as separate sections in the report and the digest.
+
+```bash
+python3 tools/alaska_daily_watch.py                        # full sweep + Telegram
+python3 tools/alaska_daily_watch.py --routes BKK-FRA --no-notify   # test subset
+python3 tools/alaska_daily_watch.py --horizon-days 60 --no-notify  # short window
+python3 tools/alaska_daily_watch.py --routes HKG-HEL --cabin economy --no-notify
+python3 tools/alaska_daily_watch.py --skip-economy                 # business only
+python3 tools/alaska_daily_watch.py --prefilter                    # retry the calendar pre-filter
+```
+
+A two-stage funnel used to keep the request count down: the `shoulderDates`
+calendar endpoint was asked first (31 days per call) and any date with **no
+award at all** was skipped. That endpoint has no cabin dimension, so it could
+only rule dates out, never in.
+
+**Disabled by default since 2026-08-04.** Alaska began rejecting nearly every
+call — 561 of 572 failed — and halving the request rate the day before made no
+difference (556/572), so the throttling was not ours to back off from. The
+calls that survived saved 1.1% of day-searches, which does not justify 572
+doomed requests per sweep. It always failed open, so nothing was ever missed;
+`--prefilter` re-enables it if Alaska loosens up.
+
+The Telegram digest leads with **what changed** versus the previous sweep —
+routes gained, lost, or now cheaper — because an identical list every morning
+stops being read. Yesterday's per-route best is kept in
+`data/alaska_award_state.json`, keyed per cabin so the two passes never
+overwrite each other; only a full sweep updates that baseline, so a `--routes`
+subset can never make unscanned routes look like they disappeared.
+
+Scheduled by `alaska-award-watch.timer` at **03:00 Asia/Taipei**
+(`TimeoutStartSec=21600`). It runs at 2 parallel requests rather than 4: the
+faster pace finished at 08:43 and tomson wants results waiting at 08:00, so the
+sweep is now gentler and starts earlier instead. At 4 workers a full two-pass
+sweep was 16,957 requests in 100 minutes, so budget roughly 3.5 hours at 2 —
+still leaving over an hour of slack. `--workers N` overrides it for one-off
+manual runs.
+
 ### ana_award_search.py — ANA Mileage Club Award Search
 
 Search ANA for international award (mileage) ticket availability. Uses CDP
