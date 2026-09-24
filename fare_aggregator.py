@@ -324,8 +324,15 @@ def _strip_html(s: str) -> str:
 # ---------------------------------------------------------------------------
 # LLM parser — OpenRouter / Gemini 2.5 Flash multimodal
 # ---------------------------------------------------------------------------
-
-PARSE_PROMPT = """You are extracting structured "bug fare" / mistake-fare data
+# Delegate to structured_fares.build_prompt() so new fields (cabin, trip_type,
+# ISO booking_deadline, travel_range, price_original_currency, price_original_amount,
+# conditions) are first-class. Legacy fields remain accepted on read; backwards
+# compatibility is verified by tests.test_structured_fares (prompt contract tests).
+try:
+    from structured_fares import build_prompt as _build_prompt
+    PARSE_PROMPT = _build_prompt()
+except ImportError:  # pragma: no cover — structured_fares is bundled in this repo
+    PARSE_PROMPT = """You are extracting structured "bug fare" / mistake-fare data
 from a deal post. Output a SINGLE JSON object — no prose, no markdown fence.
 
 Schema:
