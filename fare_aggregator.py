@@ -460,6 +460,50 @@ def send_telegram(bot_token: str, chat_id: str, message: str) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# TPE-reachable origin filter
+#
+# Only notify deals whose origin airport can be reached from Taoyuan (TPE) on
+# a non-stop flight within roughly 3.5 hours. TPE itself and the two other
+# Taiwan commercial airports (TSA Songshan, KHH Kaohsiung) are always in.
+# This keeps the digest focused on fares Tomson can actually fly from home.
+# Adjust by editing TPE_REACHABLE_CODES below.
+# ---------------------------------------------------------------------------
+
+TPE_REACHABLE_CODES: frozenset[str] = frozenset({
+    "TPE", "TSA", "KHH",
+    "HKG", "MFM",
+    "ISG", "SHI", "OKA", "KOJ", "KMJ", "KMI", "HSG", "FUK", "OIT", "HIJ",
+    "YGJ", "MYJ", "TAK", "OKJ", "KCZ", "UKB", "KIX",
+    "CJU", "PUS", "TAE", "CJJ", "ICN", "HND", "NRT", "NGO", "KMQ",
+    "CEB", "CRK", "MNL", "DAD", "HAN",
+    "FOC", "XMN", "NGB", "HGH", "PVG", "NKG", "CAN", "SZX", "WUH", "TAO",
+})
+
+TPE_REACHABLE: frozenset[str] = TPE_REACHABLE_CODES
+
+
+def is_tpe_reachable_origin(origin: str | None) -> bool:
+    """True if origin airport code is in TPE's ~3.5h non-stop set (incl. TPE)."""
+    if not origin:
+        return False
+    return origin.strip().upper() in TPE_REACHABLE
+
+
+def _extract_origin(parsed: dict | None) -> str | None:
+    """Pull the first airport code out of a parsed.route string."""
+    if not isinstance(parsed, dict):
+        return None
+    route = parsed.get("route")
+    if not isinstance(route, str):
+        return None
+    parts = route.replace("->", " ").replace(",", " ").split()
+    for tok in parts:
+        if len(tok) == 3 and tok.isalpha():
+            return tok.upper()
+    return None
+
+
 def format_alert_line(source: str, parsed: dict, item: dict) -> str:
     """One-deal line in the digest. Falls back to raw title if LLM was weak."""
     emoji = SOURCES.get(source, {}).get("emoji", "🔥")
@@ -469,7 +513,7 @@ def format_alert_line(source: str, parsed: dict, item: dict) -> str:
         parts.append(html.escape(summary_zh))
 
     bits = []
-    if v := _safe(parsed, "dates"):
+    if v := _safe(parsed, "dates") or _safe(parsed, "dates_free_text"):
         bits.append(f"📅 {html.escape(v)}")
     if v := _safe(parsed, "price_original"):
         bits.append(f"💰 {html.escape(v)}")
@@ -477,10 +521,16 @@ def format_alert_line(source: str, parsed: dict, item: dict) -> str:
         bits.append(f"💰 NT${v:,}")
     if v := _safe(parsed, "airline"):
         bits.append(f"✈ {html.escape(v)}")
-    if v := _safe(parsed, "deadline"):
+    if v := _safe(parsed, "deadline") or _safe(parsed, "booking_deadline"):
         bits.append(f"⏰ {html.escape(v)} 前")
     if bits:
         parts.append(" / ".join(bits))
+
+    origin = _extract_origin(parsed)
+    if origin and not is_tpe_reachable_origin(origin):
+        parts.append(f"⚠️ 出發地 {origin} 非 TPE 直達（不可用）")
+    elif origin and is_tpe_reachable_origin(origin) and origin != "TPE":
+        parts.append(f"ℹ️ 出發地 {origin}：需另買 TPE 接駁票")
 
     link = _safe(parsed, "deal_url") or item.get("link")
     if link:
@@ -602,7 +652,7 @@ def run_tick(dry_run: bool = False, send_alert: bool = True) -> int:
 
     conn = init_db(DB_PATH) if not dry_run else None
     new_alerts: list[tuple[str, dict, dict]] = []
-    stats = {"sources": 0, "items_seen": 0, "items_new": 0, "parsed": 0, "fare": 0, "skipped_disabled": 0}
+    stats = {"sources": 0, "items_seen": 0, "items_new": 0, "parsed": 0, "fare": 0, "fare_filtered": 0, "skipped_disabled": 0}
 
     try:
         for key, cfg in SOURCES.items():
@@ -629,9 +679,14 @@ def run_tick(dry_run: bool = False, send_alert: bool = True) -> int:
                     stats["parsed"] += 1
 
                 is_fare = bool(parsed and parsed.get("is_fare"))
+                origin = _extract_origin(parsed) if is_fare else None
+                reachable = is_fare and is_tpe_reachable_origin(origin)
                 if is_fare:
                     stats["fare"] += 1
-                    new_alerts.append((key, parsed, item))
+                    if reachable:
+                        new_alerts.append((key, parsed, item))
+                    else:
+                        stats["fare_filtered"] = stats.get("fare_filtered", 0) + 1
 
                 if not dry_run and conn is not None:
                     from structured_fares import insert_fare as insert_structured_fare
@@ -645,7 +700,7 @@ def run_tick(dry_run: bool = False, send_alert: bool = True) -> int:
                         raw_description=item["description"],
                         raw_image_urls=item["images"],
                         parsed=parsed,
-                        alerted=is_fare and send_alert and bool(tg_token and tg_chat),
+                        alerted=reachable and send_alert and bool(tg_token and tg_chat),
                     )
 
         # Telegram digest — collapse all new fares into 1 message
@@ -667,6 +722,7 @@ def run_tick(dry_run: bool = False, send_alert: bool = True) -> int:
     log(
         f"tick done | sources={stats['sources']} seen={stats['items_seen']} "
         f"new={stats['items_new']} parsed={stats['parsed']} fare={stats['fare']} "
+        f"fare_filtered={stats['fare_filtered']} "
         f"skipped_disabled={stats['skipped_disabled']} alerts_sent={len(new_alerts) if send_alert else 0}"
     )
     return len(new_alerts)

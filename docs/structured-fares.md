@@ -118,3 +118,17 @@ feed the same `fares` table.
 Drop the prompt into `PARSE_PROMPT` in `fare_aggregator.py` whenever the
 LLM should produce the richer schema. The storage code does not care
 which prompt produced the JSON.
+
+## Telegram notifications are origin-filtered
+
+Live ticks only emit a Telegram digest when the parsed route's **origin
+airport** is in `TPE_REACHABLE_CODES` — i.e. a non-stop flight from
+Taoyuan (TPE) within roughly 3.5 hours, plus TSA and KHH. TPE itself is
+always in. Filtered items still land in `bug_fares` / `fares`, but
+`alerted_at` stays null and the digest line is suppressed (the item is
+counted as `fare_filtered` in the tick log).
+
+For items that pass the filter from a non-TPE origin, the digest line
+appends `ℹ️ 出發地 ICN：需另買 TPE 接駁票`. Edit
+`TPE_REACHABLE_CODES` in `fare_aggregator.py` to widen or tighten the
+allowed origins.
