@@ -167,6 +167,12 @@ def _parse_price(parsed: dict) -> tuple[str | None, str | None, float | None, in
             amt = float(raw_num)
         except ValueError:
             amt = None
+    explicit_currency = parsed.get("price_original_currency")
+    explicit_amount = parsed.get("price_original_amount")
+    if isinstance(explicit_currency, str) and explicit_currency.upper() in _CURRENCY_TOKENS:
+        cur = explicit_currency.upper()
+    if isinstance(explicit_amount, (int, float)) and not isinstance(explicit_amount, bool) and 0 <= explicit_amount < float("inf"):
+        amt = float(explicit_amount)
     return orig, cur, amt, twd_int
 
 
@@ -232,8 +238,8 @@ def _classify(parsed: Any) -> str:
 def _build_fare_row(source_hash: str, parsed: Any) -> dict:
     """Materialise fare row dict from parsed payload."""
     p = parsed if isinstance(parsed, dict) else {}
-    bd = _iso_date(p.get("deadline"))
-    raw_dates = _safe_str(p.get("dates"))
+    bd = _iso_date(p.get("booking_deadline", p.get("deadline")))
+    raw_dates = _safe_str(p.get("dates_free_text", p.get("dates")))
     travel_start = travel_end = None
     # travel_range is the explicit form we expect from the new prompt; for
     # legacy free-text we deliberately leave dates null.
@@ -275,13 +281,9 @@ def migrate(conn: sqlite3.Connection) -> int:
     cur.execute("BEGIN")
     try:
         _ensure_schema(conn)
-        # Has anything already been backfilled?
-        existing = cur.execute("SELECT COUNT(*) FROM fares").fetchone()[0]
-        if existing:
-            cur.execute("COMMIT")
-            return 0
         rows = cur.execute(
-            "SELECT dedup_hash, parsed_json FROM bug_fares"
+            "SELECT b.dedup_hash, b.parsed_json FROM bug_fares b "
+            "WHERE NOT EXISTS (SELECT 1 FROM fares f WHERE f.source_hash=b.dedup_hash)"
         ).fetchall()
         inserted = 0
         for source_hash, raw_json in rows:

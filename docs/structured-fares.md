@@ -34,7 +34,8 @@ Always pass `--db`. There is **no default** to `data/prices.db`.
 
     python3 structured_fares_cli.py migrate --db /path/to/prices.db
 
-- Safe to re-run: counts existing rows in `fares` and bails out.
+- Safe to re-run: backfills only `bug_fares` rows with no matching `fares`
+  row, even when older structured rows already exist.
 - Wrapped in a single `BEGIN…COMMIT`; any failure rolls everything back
   so `bug_fares` stays untouched.
 

@@ -634,7 +634,8 @@ def run_tick(dry_run: bool = False, send_alert: bool = True) -> int:
                     new_alerts.append((key, parsed, item))
 
                 if not dry_run and conn is not None:
-                    insert_fare(
+                    from structured_fares import insert_fare as insert_structured_fare
+                    insert_structured_fare(
                         conn,
                         dedup_hash=dh,
                         source=key,
