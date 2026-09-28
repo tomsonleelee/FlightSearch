@@ -34,7 +34,7 @@ ana_setup.py → ana_award_search.py
 ## 分工
 
 - **主對話**：策略規劃 — 選機場、排日期、決定搜尋策略、比價決策、最終推薦
-- **背景 subagent**：需要 agent-browser 手動操作的日曆探索（每個候選機場一個、平行跑）；這是機械式瀏覽器操作，啟動時顯式指定較便宜的模型（如 Sonnet），不要讓它繼承主對話的模型
+- **背景 subagent**：僅用於需要 agent-browser 手動操作的日曆探索（每個候選機場一個、平行跑）
 
 一般搜尋不需要 LLM 介入 — `search_flights.py` 直接輸出結構化結果。
 
@@ -108,7 +108,7 @@ ana_setup.py → ana_award_search.py
 
 **第一階段：日曆探索（需 agent-browser）**
 1. 用 agent-browser 手動操作 Google Flights 日曆視圖
-2. 每個候選機場各啟一個背景 subagent（顯式指定 Sonnet）
+2. 每個候選機場各啟一個背景 subagent
 3. 匯集結果，找出最便宜的日期和機場
 
 **第二階段：用快速模式搜尋**
