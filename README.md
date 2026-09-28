@@ -18,26 +18,28 @@ flights using headless browser automation — zero API keys, zero LLM tokens.
 ## Requirements
 
 - Python 3.11+
-- Playwright (`pip install playwright && playwright install chromium`)
-- Patchright (`pip install patchright && patchright install chromium`) — for award search only
+- A project virtualenv at `.venv/` (`python3 -m venv .venv`) — every command below uses `.venv/bin/python`; the system `python3` has no Playwright/Patchright and is PEP 668 externally managed
+- Playwright (`.venv/bin/pip install playwright && .venv/bin/playwright install chromium`)
+- Patchright (`.venv/bin/pip install patchright && .venv/bin/patchright install chromium`) — for award search only
 - Google Chrome — required for ANA award search (CDP mode uses system Chrome)
 - `curl` — required for `alaska_award_watch.py`
 
 No other dependencies. All tools use Python standard library + browser automation.
-A virtual environment (`.venv/`) is recommended for dependency isolation.
+The systemd units on the VPS already run from `.venv/bin/python`.
 
 ## Quick Start
 
 ```bash
-# Install Playwright
-pip install playwright
-playwright install chromium
+# One-time setup: virtualenv + Playwright (never install into the system Python)
+python3 -m venv .venv
+.venv/bin/pip install playwright patchright
+.venv/bin/playwright install chromium
 
 # Search a single route
-python3 tools/search_flights.py "$(python3 tools/build_url.py TPE ATH 2026-09-01 2026-09-11 --cabin business)"
+.venv/bin/python tools/search_flights.py "$(.venv/bin/python tools/build_url.py TPE ATH 2026-09-01 2026-09-11 --cabin business)"
 
 # Batch search multiple dates
-python3 tools/build_url.py TPE ATH --cabin business --batch \
+.venv/bin/python tools/build_url.py TPE ATH --cabin business --batch \
     2026-09-01,2026-09-11 \
     2026-09-04,2026-09-14
 # Copy URLs and pass to search_flights.py --parallel
@@ -49,13 +51,13 @@ python3 tools/build_url.py TPE ATH --cabin business --batch \
 
 ```bash
 # Round-trip
-python3 tools/build_url.py TPE ATH 2026-09-01 2026-09-11 --cabin business
+.venv/bin/python tools/build_url.py TPE ATH 2026-09-01 2026-09-11 --cabin business
 
 # One-way
-python3 tools/build_url.py TPE ATH 2026-09-01 --cabin economy
+.venv/bin/python tools/build_url.py TPE ATH 2026-09-01 --cabin economy
 
 # Batch mode
-python3 tools/build_url.py TPE ATH --cabin business --batch \
+.venv/bin/python tools/build_url.py TPE ATH --cabin business --batch \
     2026-09-01,2026-09-11 2026-09-04,2026-09-14
 
 # Options: --cabin (economy|premium|business|first), --stops, --passengers, --curr
@@ -65,13 +67,13 @@ python3 tools/build_url.py TPE ATH --cabin business --batch \
 
 ```bash
 # Generate all strategies
-python3 tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --cabin business
+.venv/bin/python tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --cabin business
 
 # JSON output
-python3 tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --cabin business --json
+.venv/bin/python tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --cabin business --json
 
 # Specific strategies only
-python3 tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --types baseline open_jaw
+.venv/bin/python tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --types baseline open_jaw
 ```
 
 Strategies: baseline (round-trip), open_jaw, reverse, split.
@@ -80,46 +82,46 @@ Strategies: baseline (round-trip), open_jaw, reverse, split.
 
 ```bash
 # Single URL
-python3 tools/search_flights.py "<google-flights-url>"
+.venv/bin/python tools/search_flights.py "<google-flights-url>"
 
 # Parallel search with labels
-python3 tools/search_flights.py --parallel --top 5 \
+.venv/bin/python tools/search_flights.py --parallel --top 5 \
     --labels "9/1-9/11,9/4-9/14" "<url1>" "<url2>"
 
 # JSON output
-python3 tools/search_flights.py --format json "<url>"
+.venv/bin/python tools/search_flights.py --format json "<url>"
 
 # From file
-python3 tools/search_flights.py --parallel --file urls.txt
+.venv/bin/python tools/search_flights.py --parallel --file urls.txt
 ```
 
 ### price_tracker.py — Price Tracking
 
 ```bash
 # Scan all routes in watchlist
-python3 tools/price_tracker.py
+.venv/bin/python tools/price_tracker.py
 
 # Scan + run anomaly detection
-python3 tools/price_tracker.py --alert
+.venv/bin/python tools/price_tracker.py --alert
 
 # Dry run (show URLs only)
-python3 tools/price_tracker.py --dry-run
+.venv/bin/python tools/price_tracker.py --dry-run
 
 # Custom watchlist
-python3 tools/price_tracker.py --watchlist path/to/watchlist.json
+.venv/bin/python tools/price_tracker.py --watchlist path/to/watchlist.json
 ```
 
 ### price_alert.py — Anomaly Detection
 
 ```bash
 # Check for anomalies
-python3 tools/price_alert.py
+.venv/bin/python tools/price_alert.py
 
 # With Telegram notifications
-python3 tools/price_alert.py --notify
+.venv/bin/python tools/price_alert.py --notify
 
 # Price history summary
-python3 tools/price_alert.py --summary
+.venv/bin/python tools/price_alert.py --summary
 ```
 
 ### award_search.py — Alaska Airlines Award Search
@@ -129,23 +131,23 @@ Playwright fork that bypasses Akamai anti-bot protection.
 
 ```bash
 # Install Patchright
-pip install patchright
-patchright install chromium
+.venv/bin/pip install patchright
+.venv/bin/patchright install chromium
 
 # One-way award search
-python3 tools/award_search.py SEA LAX 2026-10-01
+.venv/bin/python tools/award_search.py SEA LAX 2026-10-01
 
 # Round-trip
-python3 tools/award_search.py SEA LAX 2026-10-01 --return-date 2026-10-08
+.venv/bin/python tools/award_search.py SEA LAX 2026-10-01 --return-date 2026-10-08
 
 # Date range (search multiple days)
-python3 tools/award_search.py SEA LAX --start 2026-10-01 --end 2026-10-03
+.venv/bin/python tools/award_search.py SEA LAX --start 2026-10-01 --end 2026-10-03
 
 # Monthly calendar view (lowest miles per day)
-python3 tools/award_search.py SEA NRT 2026-10-01 --calendar
+.venv/bin/python tools/award_search.py SEA NRT 2026-10-01 --calendar
 
 # JSON output
-python3 tools/award_search.py SEA LAX 2026-10-01 --format json
+.venv/bin/python tools/award_search.py SEA LAX 2026-10-01 --format json
 
 # Options: --top N, --headless, --return-date, --calendar, --format {table,json}
 ```
@@ -161,7 +163,7 @@ routes, passenger count, cabin, point caps, explicit dates, and fixed monthly
 scan schedules.
 
 ```bash
-python3 tools/alaska_award_watch.py \
+.venv/bin/python tools/alaska_award_watch.py \
     --route BKK-FRA --route HKG-LHR \
     --passengers 2 --cabin business \
     --max-points 75000 \
@@ -175,7 +177,7 @@ Build a browser-free monthly calendar by scanning every day with bounded curl
 concurrency:
 
 ```bash
-python3 tools/alaska_award_watch.py \
+.venv/bin/python tools/alaska_award_watch.py \
     --route BKK-FRA --passengers 2 --cabin business \
     --max-points 75000 --calendar 2026-10 --workers 4 \
     --output results/bkk_fra_2026-10_calendar.md
@@ -215,12 +217,12 @@ count so that degradation is visible rather than silent.)
 Both passes appear as separate sections in the report and the digest.
 
 ```bash
-python3 tools/alaska_daily_watch.py                        # full sweep + Telegram
-python3 tools/alaska_daily_watch.py --routes BKK-FRA --no-notify   # test subset
-python3 tools/alaska_daily_watch.py --horizon-days 60 --no-notify  # short window
-python3 tools/alaska_daily_watch.py --routes HKG-HEL --cabin economy --no-notify
-python3 tools/alaska_daily_watch.py --skip-economy                 # business only
-python3 tools/alaska_daily_watch.py --prefilter                    # retry the calendar pre-filter
+.venv/bin/python tools/alaska_daily_watch.py                        # full sweep + Telegram
+.venv/bin/python tools/alaska_daily_watch.py --routes BKK-FRA --no-notify   # test subset
+.venv/bin/python tools/alaska_daily_watch.py --horizon-days 60 --no-notify  # short window
+.venv/bin/python tools/alaska_daily_watch.py --routes HKG-HEL --cabin economy --no-notify
+.venv/bin/python tools/alaska_daily_watch.py --skip-economy                 # business only
+.venv/bin/python tools/alaska_daily_watch.py --prefilter                    # retry the calendar pre-filter
 ```
 
 A two-stage funnel used to keep the request count down: the `shoulderDates`
@@ -260,30 +262,30 @@ fully bypasses Akamai Bot Manager.
 
 ```bash
 # Install Patchright (used for CDP connection only)
-pip install patchright && patchright install chromium
+.venv/bin/pip install patchright && .venv/bin/patchright install chromium
 
 # Add credentials to .env
 echo "ANA_MEMBER_NUMBER=your-member-number" >> .env
 echo "ANA_PASSWORD=your-password" >> .env
 
 # First login (opens Chrome, you log in manually, cookies saved to profile)
-python3 tools/ana_setup.py --prefill
+.venv/bin/python tools/ana_setup.py --prefill
 ```
 
 **Search usage:**
 
 ```bash
 # Award search (auto-login + JS form submission + calendar results)
-python3 tools/ana_award_search.py TPE NRT 2026-10-01 --top 5
+.venv/bin/python tools/ana_award_search.py TPE NRT 2026-10-01 --top 5
 
 # Round-trip
-python3 tools/ana_award_search.py TPE NRT 2026-10-01 --return-date 2026-10-08
+.venv/bin/python tools/ana_award_search.py TPE NRT 2026-10-01 --return-date 2026-10-08
 
 # Monthly calendar view (availability per cabin per day)
-python3 tools/ana_award_search.py TPE NRT 2026-10-01 --calendar
+.venv/bin/python tools/ana_award_search.py TPE NRT 2026-10-01 --calendar
 
 # JSON output
-python3 tools/ana_award_search.py TPE NRT 2026-10-01 --format json --top 5
+.venv/bin/python tools/ana_award_search.py TPE NRT 2026-10-01 --format json --top 5
 ```
 
 **How it works:** Launches system Chrome via CDP (no automation hooks) → auto-fills

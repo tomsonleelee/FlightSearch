@@ -27,14 +27,14 @@ ana_setup.py → ana_award_search.py
 - **`fare_aggregator.py`**（repo 根）：BUG fare 聚合 — TheFlightDeal RSS + SecretFlying homepage scrape，Gemini 2.5 Flash 解析、SHA-256 dedup、Telegram 摘要；獨立 `bug_fares` 表 + `flightsearch-bugfare.timer` hourly 08-23 Asia/Taipei
 - **`tools/award_search.py`**：Alaska Airlines 里程票搜尋（Patchright 反偵測瀏覽器）+ 月曆視圖
 - **`tools/alaska_award_watch.py`**：Alaska 獎勵票輕量掃描 — 純 `curl` 抓 award 結果頁、本地解析，不開瀏覽器；支援多航線／點數上限／月曆模式
-- **`tools/alaska_daily_watch.py`**：上者的排程封裝 — **每日 03:00**（`alaska-award-watch.timer`、2026-08-02 從 07:00 提前）產報告到 `results/` **並發 Telegram 摘要**。**每輪跑兩段**：①全 32 條 × 商務艙 × ≤75,000 點 ②**20 條 TPE→亞洲短程** × 經濟艙 × ≤30,000 點（2026-08-01 加，因為赫爾辛基線根本沒商務艙位、只掃商務等於濾掉唯一存在的東西）。**經濟艙用明確清單、不可用 `TPE-*` 前綴推導**（會誤含倫敦/洛杉磯等跨洋線，tomson 明講經濟艙只要亞洲短程）。實測**多數航線都有位**（TPE-HKG／TPE-BKK／TPE-NRT 皆 7,500 點/人起，另一批約 25,000）。⚠️ 首次探測曾誤判「只有 NRT/HND 有位」——因為月曆端點**被限流後回傳失敗，而探測把失敗當成沒位**（NRT/HND 正好是清單前兩個、限流前跑完）。**失敗 ≠ 沒有獎勵位**；預篩現在會回報失敗次數讓這種降級看得見。摘要**先講與昨天的差異**（新增／消失／變便宜），基準存 `data/alaska_award_state.json`（**分艙等 key**、兩段互不覆蓋、可讀舊扁平格式）；**只有完整掃描會更新基準**，避免 `--routes` 子集把沒掃到的航線誤判成「消失」。**並行數 2**（原 4；tomson 要求「掃慢一點但早一點啟動、確保 08:00 拿得到」→ 放慢一半約 3.5 小時、提前到 03:00 仍有 1 小時餘裕；`--workers N` 可覆蓋）。**預篩 2026-08-04 起預設關閉**（tomson 拍板）——端點失敗 561/572、只省 1.1% 查詢；放慢並行也無改善（證明限流與我方速率無關），`--prefilter` 可重新開啟。測試務必加 `--no-notify`（預設會通知，因為「靜靜不通知」正是 2026-08-01 踩過的坑）
+- **`tools/alaska_daily_watch.py`**：上者的排程封裝，產報告到 `results/` 並發 Telegram 摘要。排程 `alaska-award-watch.timer`（每日 03:00 Asia/Taipei）**目前停用**——tomson 指示暫停，恢復前先問他（恢復指令：`systemctl --user enable --now alaska-award-watch.timer`）。每輪兩段：①全 32 條 × 商務艙 × ≤75,000 點 ②`ECONOMY_ROUTES` 的 20 條 TPE→亞洲短程 × 經濟艙 × ≤30,000 點（有些航線根本沒有商務艙獎勵位，只掃商務會把唯一存在的位子濾掉）。**經濟艙用明確清單、不可用 `TPE-*` 前綴推導**——會誤含倫敦／洛杉磯等跨洋線，而經濟艙只要亞洲短程。**端點失敗 ≠ 沒有獎勵位**：月曆端點被限流時會回傳失敗，失敗次數要報出來，不能當成 0 命中。摘要先講與上次的差異（新增／消失／變便宜），基準存 `data/alaska_award_state.json`（按艙等分 key、兩段互不覆蓋、可讀舊扁平格式）；**只有完整掃描會更新基準**，`--routes` 子集不會，以免沒掃到的航線被誤判成「消失」。預設並行數 2（全掃約 3.5 小時，03:00 啟動可在 08:00 前完成；`--workers N` 可覆蓋）。預篩預設關閉——端點幾乎全數失敗（561/572）、只省約 1% 查詢，放慢並行也沒改善，代表限流與我方速率無關；`--prefilter` 可重開。測試務必加 `--no-notify`（預設會發通知）。
 - **`tools/ana_setup.py`**：ANA 登入設定 — CDP 開正常 Chrome 讓人類登入，存 cookie 到 `auth/`
 - **`tools/ana_award_search.py`**：ANA 里程票搜尋（CDP Chrome + JS 表單提交 + 自動登入）+ 月曆視圖
 
-## 模型分工
+## 分工
 
-- **Opus**（主對話）：策略規劃 — 選機場、排日期、決定搜尋策略、比價決策、最終推薦
-- **Sonnet**（Agent tool）：僅用於需要 agent-browser 手動操作的場景（日曆探索）
+- **主對話**：策略規劃 — 選機場、排日期、決定搜尋策略、比價決策、最終推薦
+- **背景 subagent**：需要 agent-browser 手動操作的日曆探索（每個候選機場一個、平行跑）；這是機械式瀏覽器操作，啟動時顯式指定較便宜的模型（如 Sonnet），不要讓它繼承主對話的模型
 
 一般搜尋不需要 LLM 介入 — `search_flights.py` 直接輸出結構化結果。
 
@@ -52,12 +52,12 @@ ana_setup.py → ana_award_search.py
 
 ```bash
 # 步驟 3：生成 URL
-python3 tools/build_url.py TPE ATH --cabin business --batch \
+.venv/bin/python tools/build_url.py TPE ATH --cabin business --batch \
     2026-09-01,2026-09-11 \
     2026-09-04,2026-09-14
 
 # 步驟 4：平行搜尋（直接輸出結果表格）
-python3 tools/search_flights.py --parallel --top 5 \
+.venv/bin/python tools/search_flights.py --parallel --top 5 \
     --labels "9/1-9/11,9/4-9/14" \
     "<url1>" "<url2>"
 ```
@@ -81,10 +81,10 @@ python3 tools/search_flights.py --parallel --top 5 \
 
 ```bash
 # 步驟 2：生成策略 URL
-python3 tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --cabin business --json
+.venv/bin/python tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --cabin business --json
 
 # 步驟 3：去重後寫入檔案，平行搜尋
-python3 tools/search_flights.py --parallel --top 3 --format json \
+.venv/bin/python tools/search_flights.py --parallel --top 3 --format json \
     --labels "Baseline RT,OW TPE→ATH,OW IST→TPE,..." \
     --file urls.txt
 ```
@@ -108,7 +108,7 @@ python3 tools/search_flights.py --parallel --top 3 --format json \
 
 **第一階段：日曆探索（需 agent-browser）**
 1. 用 agent-browser 手動操作 Google Flights 日曆視圖
-2. 每個候選機場各啟一個背景 Sonnet Agent
+2. 每個候選機場各啟一個背景 subagent（顯式指定 Sonnet）
 3. 匯集結果，找出最便宜的日期和機場
 
 **第二階段：用快速模式搜尋**
@@ -117,17 +117,19 @@ python3 tools/search_flights.py --parallel --top 3 --format json \
 
 ## 工具參考
 
+執行環境：Python 指令一律用 `.venv/bin/python`、裝套件用 `.venv/bin/pip`——系統 `python3` 沒有 Playwright／Patchright，且是 PEP 668 externally-managed，無法直接 pip install。
+
 ### build_url.py — URL 生成
 
 ```bash
 # 來回票
-python3 tools/build_url.py TPE ATH 2026-09-01 2026-09-11 --cabin business
+.venv/bin/python tools/build_url.py TPE ATH 2026-09-01 2026-09-11 --cabin business
 
 # 單程（不給 return_date）
-python3 tools/build_url.py TPE ATH 2026-09-01 --cabin economy
+.venv/bin/python tools/build_url.py TPE ATH 2026-09-01 --cabin economy
 
 # 批次生成
-python3 tools/build_url.py TPE ATH --cabin business --batch \
+.venv/bin/python tools/build_url.py TPE ATH --cabin business --batch \
     2026-09-01,2026-09-11 \
     2026-09-04,2026-09-14
 
@@ -144,13 +146,13 @@ python3 tools/build_url.py TPE ATH --cabin business --batch \
 
 ```bash
 # 生成所有策略
-python3 tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --cabin business
+.venv/bin/python tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --cabin business
 
 # JSON 輸出（方便程式解析）
-python3 tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --cabin business --json
+.venv/bin/python tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --cabin business --json
 
 # 只生成特定策略
-python3 tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --types baseline open_jaw
+.venv/bin/python tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --types baseline open_jaw
 
 # 可選策略類型：baseline, open_jaw, reverse, split
 ```
@@ -163,15 +165,15 @@ python3 tools/combo_search.py TPE ATH 2026-09-01 2026-09-11 --types baseline ope
 
 ```bash
 # 單一 URL
-python3 tools/search_flights.py "<google-flights-url>"
+.venv/bin/python tools/search_flights.py "<google-flights-url>"
 
 # 多 URL 平行（推薦）
-python3 tools/search_flights.py --parallel --top 5 \
+.venv/bin/python tools/search_flights.py --parallel --top 5 \
     --labels "搜尋1,搜尋2,搜尋3" \
     "<url1>" "<url2>" "<url3>"
 
 # 從檔案讀取 URL（一行一個）
-python3 tools/search_flights.py --parallel --top 3 --format json \
+.venv/bin/python tools/search_flights.py --parallel --top 3 --format json \
     --labels "label1,label2" --file urls.txt
 
 # 參數
@@ -196,16 +198,16 @@ python3 tools/search_flights.py --parallel --top 3 --format json \
 
 ```bash
 # 掃描所有監控航線，存入 DB
-python3 tools/price_tracker.py
+.venv/bin/python tools/price_tracker.py
 
 # 掃描後自動跑異常偵測
-python3 tools/price_tracker.py --alert
+.venv/bin/python tools/price_tracker.py --alert
 
 # 只看 URL（不實際搜尋）
-python3 tools/price_tracker.py --dry-run
+.venv/bin/python tools/price_tracker.py --dry-run
 
 # 自訂 watchlist
-python3 tools/price_tracker.py --watchlist path/to/watchlist.json
+.venv/bin/python tools/price_tracker.py --watchlist path/to/watchlist.json
 ```
 
 **流程：** 讀 watchlist.json → `build_url` 生成 URL → `search_flights` 執行搜尋 → 寫入 `data/prices.db`
@@ -218,13 +220,13 @@ python3 tools/price_tracker.py --watchlist path/to/watchlist.json
 
 ```bash
 # 檢查異常
-python3 tools/price_alert.py
+.venv/bin/python tools/price_alert.py
 
 # 啟用 Telegram 通知
-python3 tools/price_alert.py --notify
+.venv/bin/python tools/price_alert.py --notify
 
 # 顯示歷史價格摘要
-python3 tools/price_alert.py --summary
+.venv/bin/python tools/price_alert.py --summary
 ```
 
 **Z-score 邏輯：**
@@ -256,11 +258,11 @@ python3 tools/price_alert.py --summary
 - **SecretFlying**：`/feed/` 被伺服器 301 重導到首頁、所有 alt feed 路徑被 Cloudflare managed-challenge 擋；改用 headless Chromium 抓首頁 HTML、用 regex 解 `<a title="...">` 取得 10-15 張 deal 卡（title 已含 route+price 全資訊，LLM 不需再 fetch 每篇）
 - **bonbon.map (IG)**：phase 1 **停用** — rsshub.app 公共 instance 完全被 Cloudflare 擋（連 patchright stealth 都過不去）；hook 留在 `SOURCES` 等 phase 2 用自架 rsshub 或別的 IG 來源
 
-**LLM：** OpenRouter `google/gemini-2.5-flash`（多模態、便宜、實測活著）。`.env` 需 `OPENROUTER_API_KEY`（從 Airo .env 已 append 過）。Prompt 強制 JSON 輸出 + 繁中 summary。
+**LLM：** OpenRouter `google/gemini-2.5-flash`（多模態、便宜；定義在 `fare_aggregator.py` 的 `OPENROUTER_MODEL`）。`.env` 需 `OPENROUTER_API_KEY`。Prompt 強制 JSON 輸出（`response_format: json_object`）+ 繁中 summary。
 
 **Dedup：** SHA-256 of `(source, item_guid, pub_date)` → `bug_fares.dedup_hash` PK。重跑 tick 時已存在則跳過 LLM 解析。
 
-**Telegram：** 把同 tick 的多筆新發現 collapse 成一封摘要（避免 spam）；4096 字元自動分段。沒新發現就靜默。
+**Telegram：** 只通知出發地在 TPE 約 3.5 小時直飛圈內的 deal（`TPE_REACHABLE_CODES`；圈外或無法判斷出發地的照樣入庫但不通知——tick log 記為 `fare_filtered`、`alerted_at` 留空；細節見 `docs/structured-fares.md`）。把同 tick 的多筆新發現 collapse 成一封摘要（避免 spam）；4096 字元自動分段。沒新發現就靜默。
 
 ### award_search.py — Alaska Airlines 里程票搜尋
 
@@ -268,22 +270,22 @@ python3 tools/price_alert.py --summary
 
 ```bash
 # 安裝 Patchright
-pip install patchright && patchright install chromium
+.venv/bin/pip install patchright && .venv/bin/patchright install chromium
 
 # 單程搜尋
-python3 tools/award_search.py SEA LAX 2026-10-01
+.venv/bin/python tools/award_search.py SEA LAX 2026-10-01
 
 # 來回搜尋
-python3 tools/award_search.py SEA LAX 2026-10-01 --return-date 2026-10-08
+.venv/bin/python tools/award_search.py SEA LAX 2026-10-01 --return-date 2026-10-08
 
 # 日期區間（逐日搜尋）
-python3 tools/award_search.py SEA LAX --start 2026-10-01 --end 2026-10-03
+.venv/bin/python tools/award_search.py SEA LAX --start 2026-10-01 --end 2026-10-03
 
 # 月曆視圖（整月最低里程數）
-python3 tools/award_search.py SEA NRT 2026-10-01 --calendar
+.venv/bin/python tools/award_search.py SEA NRT 2026-10-01 --calendar
 
 # JSON 輸出
-python3 tools/award_search.py SEA LAX 2026-10-01 --format json
+.venv/bin/python tools/award_search.py SEA LAX 2026-10-01 --format json
 ```
 
 **技術細節：**
@@ -300,7 +302,7 @@ echo "ANA_MEMBER_NUMBER=your-number" >> .env
 echo "ANA_PASSWORD=your-password" >> .env
 
 # 開正常 Chrome 讓人類登入（cookie 存到 auth/）
-python3 tools/ana_setup.py --prefill
+.venv/bin/python tools/ana_setup.py --prefill
 ```
 
 **流程：** `subprocess` 開正常 Chrome（`--remote-debugging-port`）→ 導到 ANA 登入頁 → 人類手動登入 → CDP 偵測登入成功 → Patchright `connect_over_cdp()` 抓 cookie → 存 `auth/ana_state.json` + `auth/ana_meta.json`
@@ -311,16 +313,16 @@ python3 tools/ana_setup.py --prefill
 
 ```bash
 # 搜尋（自動登入 + JS 表單提交 + 日曆結果）
-python3 tools/ana_award_search.py TPE NRT 2026-10-01 --top 5
+.venv/bin/python tools/ana_award_search.py TPE NRT 2026-10-01 --top 5
 
 # 來回搜尋
-python3 tools/ana_award_search.py TPE NRT 2026-10-01 --return-date 2026-10-08
+.venv/bin/python tools/ana_award_search.py TPE NRT 2026-10-01 --return-date 2026-10-08
 
 # 月曆視圖（各艙等每日可用性）
-python3 tools/ana_award_search.py TPE NRT 2026-10-01 --calendar
+.venv/bin/python tools/ana_award_search.py TPE NRT 2026-10-01 --calendar
 
 # JSON 輸出
-python3 tools/ana_award_search.py TPE NRT 2026-10-01 --format json --top 5
+.venv/bin/python tools/ana_award_search.py TPE NRT 2026-10-01 --format json --top 5
 ```
 
 **技術細節：**

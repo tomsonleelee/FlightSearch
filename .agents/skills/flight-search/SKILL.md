@@ -1,7 +1,7 @@
 ---
 name: flight-search
 description: Search Google Flights for cheapest flights. Use when user asks to search flights, compare airfares, or find cheap tickets. Triggers on "search flights", "find flights", "flight prices", "cheapest flight".
-allowed-tools: Bash(python3 tools/*), Bash(python3 -c *), Bash(playwright install *)
+allowed-tools: Bash(.venv/bin/python tools/*), Bash(.venv/bin/python -c *), Bash(.venv/bin/pip install *), Bash(.venv/bin/playwright install *)
 disable-model-invocation: true
 ---
 
@@ -13,15 +13,15 @@ Search Google Flights using the automated Playwright tool chain.
 
 ## Step 0: Check Playwright
 
-Run this check first. If it fails, install automatically:
+Run this check first. Use the project venv (`.venv/bin/python`): the system `python3` has no Playwright and is PEP 668 externally-managed, so installing into it fails.
 
 ```bash
-python3 -c "from playwright.sync_api import sync_playwright; print('OK')"
+.venv/bin/python -c "from playwright.sync_api import sync_playwright; print('OK')"
 ```
 
 If import fails:
 ```bash
-pip install playwright && playwright install chromium
+.venv/bin/pip install -r requirements.txt && .venv/bin/playwright install chromium
 ```
 
 ## Step 1: Parse Arguments
@@ -43,9 +43,9 @@ When only a month is given (e.g. `2026-09`), generate 4 representative date pair
 - Early month weekday: 1st~3rd → +10 days
 - Early month weekend: first Saturday → +10 days
 - Mid month weekday: 15th~17th → +10 days
-- Mid month weekend: Saturday closest to 15th → +10 days
+- Mid month weekend: first Saturday on or after the 15th → +10 days
 
-Example: `2026-09` expands to:
+Example (illustrative): `2026-09` expands to:
 ```
 2026-09-01,2026-09-11
 2026-09-05,2026-09-15
@@ -60,7 +60,7 @@ Example: `2026-09` expands to:
 Use `build_url.py --batch`:
 
 ```bash
-python3 tools/build_url.py <origin> <dest> --cabin <cabin> --batch \
+.venv/bin/python tools/build_url.py <origin> <dest> --cabin <cabin> --batch \
     <date1_depart>,<date1_return> \
     <date2_depart>,<date2_return> ...
 ```
@@ -70,7 +70,7 @@ python3 tools/build_url.py <origin> <dest> --cabin <cabin> --batch \
 Use `combo_search.py` to generate multi-strategy URLs:
 
 ```bash
-python3 tools/combo_search.py <origin> <dest> <depart> <return> --cabin <cabin> --json
+.venv/bin/python tools/combo_search.py <origin> <dest> <depart> <return> --cabin <cabin> --json
 ```
 
 Then deduplicate URLs across strategies. Many segments share the same URL (e.g. all Open Jaw strategies share the same outbound one-way).
@@ -80,14 +80,14 @@ Then deduplicate URLs across strategies. Many segments share the same URL (e.g. 
 Run `search_flights.py` with all URLs. Split into batches of 5-6 URLs for parallel execution:
 
 ```bash
-python3 tools/search_flights.py --parallel --top <N> --format json \
+.venv/bin/python tools/search_flights.py --parallel --top <N> --format json \
     --labels "<label1>,<label2>,..." \
     "<url1>" "<url2>" ...
 ```
 
 For large URL sets, write URLs to a temp file:
 ```bash
-python3 tools/search_flights.py --parallel --top <N> --format json \
+.venv/bin/python tools/search_flights.py --parallel --top <N> --format json \
     --labels "<labels>" --file /tmp/flight_urls.txt
 ```
 
