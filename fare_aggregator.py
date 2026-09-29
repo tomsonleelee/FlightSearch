@@ -70,6 +70,12 @@ SOURCES = {
         "emoji": "🤫",
         "enabled": True,
     },
+    "tft_business": {
+        "url": "https://www.the-frequent-traveler.com.tw/feed/",
+        "fetcher": "tft",
+        "emoji": "💼",
+        "enabled": True,
+    },
     "bonbon": {
         "url": "https://rsshub.app/instagram/bonbon.map",
         "fetcher": "playwright",
@@ -454,9 +460,15 @@ def send_telegram(bot_token: str, chat_id: str, message: str) -> bool:
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
-            return r.status == 200
-    except (urllib.error.URLError, OSError) as e:
-        log(f"  Telegram send failed: {e}")
+            response = json.load(r)
+            message_id = response.get('result', {}).get('message_id')
+            if r.status == 200 and response.get('ok') is True and message_id:
+                log(f"  Telegram accepted message_id={message_id}")
+                return True
+            log("  Telegram response did not confirm delivery")
+            return False
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        log(f"  Telegram send failed: {type(e).__name__}")
         return False
 
 
@@ -644,8 +656,8 @@ def run_tick(dry_run: bool = False, send_alert: bool = True) -> int:
 
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
     if not api_key:
-        log("FATAL: OPENROUTER_API_KEY missing from environment (.env)")
-        return 0
+        log("WARN: OPENROUTER_API_KEY missing — LLM sources skipped; TFT is deterministic")
+    tft_sent = 0
 
     tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     tg_chat = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -661,6 +673,33 @@ def run_tick(dry_run: bool = False, send_alert: bool = True) -> int:
                 stats["skipped_disabled"] += 1
                 continue
             stats["sources"] += 1
+            if cfg.get("fetcher") == "tft":
+                from tft_source import fetch_items
+                from tft_notifications import process as process_tft
+                items = fetch_items()  # Fail loudly on fetch/layout changes.
+                tft_conn = conn if conn is not None else sqlite3.connect(":memory:")
+                if conn is None:
+                    tft_conn.executescript(SCHEMA)
+                deliver = None
+                if send_alert and not dry_run and tg_token and tg_chat:
+                    deliver = lambda text: send_telegram(tg_token, tg_chat, text)
+                try:
+                    result = process_tft(tft_conn, items,
+                        lambda p: is_tpe_reachable_origin(_extract_origin(p)), deliver)
+                finally:
+                    if conn is None:
+                        tft_conn.close()
+                log(f"  TFT result: {json.dumps(result, sort_keys=True)}")
+                tft_sent += result['sent']
+                stats['items_seen'] += result['seen']
+                stats['items_new'] += result['stored']
+                stats['fare_filtered'] += result['filtered']
+                if result['failed'] or (result['eligible'] and send_alert and not dry_run and deliver is None):
+                    raise RuntimeError('TFT notification failed/missing credentials; unmarked offers will retry')
+                continue
+            if not api_key:
+                log(f"  {key}: SKIPPED — no LLM credentials")
+                continue
             items = fetch_source(key, cfg)
             for item in items:
                 stats["items_seen"] += 1
@@ -723,9 +762,10 @@ def run_tick(dry_run: bool = False, send_alert: bool = True) -> int:
         f"tick done | sources={stats['sources']} seen={stats['items_seen']} "
         f"new={stats['items_new']} parsed={stats['parsed']} fare={stats['fare']} "
         f"fare_filtered={stats['fare_filtered']} "
-        f"skipped_disabled={stats['skipped_disabled']} alerts_sent={len(new_alerts) if send_alert else 0}"
+        f"skipped_disabled={stats['skipped_disabled']} alerts_sent={len(new_alerts) if send_alert else 0} "
+        f"tft_alerts_sent={tft_sent}"
     )
-    return len(new_alerts)
+    return len(new_alerts) + tft_sent
 
 
 def _chunk_message(s: str, limit: int) -> list[str]:
