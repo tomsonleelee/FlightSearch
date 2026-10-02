@@ -27,6 +27,12 @@
 systemctl --user status flightsearch-bugfare.timer
 ```
 
-首次啟用前以 SQLite backup API 備份正式 DB、真實文章在隔離 DB 經實際 run_tick 重播、核對 eligible/filtered、新資料 normalized rows、寄送失敗重試與重跑 dedup；首次正式 tick 後核對寄出標記及第二輪無重送。原有其他來源與 Alaska/summary timer 狀態不變。
+## 排程與停機事故
+
+2026-09-29 部署本來源時先停掉 `flightsearch-bugfare.timer`、忘了重新啟動；週三 06:56 (UTC 22:56) 起至 10/02 上午前無 tick。10/02 已重新啟動 timer 並即時跑一次 tick：TFT 解析 **18 筆**，全部已是先前那篇 14 筆通知的 `unchanged`，未重送；其他來源抓到 27 筆。事故根因是部署流程缺步驟，未自動化；以後若再次 stop 該 timer 並 commit，必須在同一回合內 `systemctl --user start flightsearch-bugfare.timer` 並驗證。
+
+## 備份與首次正式啟用
+
+部署當下以 SQLite backup API 對正式 `data/prices.db` 落 `data/prices-pre-tft-firsttick-<UTC>.bak.db`；首次 TFT 正式啟用前必先存在此檔；刪除前不可 `INSERT OR REPLACE` 或刪除 `tft_business` source rows 作為驗證。重新部署、改 schema 或重跑 migrate 前要再備一次。
 
 僅停用本來源可將 registry 的 enabled 設為 False；不需刪 DB 或清空 dedup。
